@@ -50,6 +50,8 @@ public class WebRTCView extends ViewGroup {
      */
     private static final ScalingType DEFAULT_SCALING_TYPE = ScalingType.SCALE_ASPECT_FIT;
 
+    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 2;
+
     private static final String TAG = WebRTCModule.TAG;
 
     /**
@@ -155,6 +157,12 @@ public class WebRTCView extends ViewGroup {
     private VideoSink rendererSink;
     private SurfaceViewRenderer surfaceViewRenderer;
     private VideoTextureViewRenderer textureViewRenderer;
+    private boolean hasPendingTextureLayout;
+    private int pendingTextureBottom;
+    private int pendingTextureLeft;
+    private int pendingTextureRight;
+    private int pendingTextureTop;
+    private int textureResizeFramesUntilCommit;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -177,6 +185,7 @@ public class WebRTCView extends ViewGroup {
 
         if (rendererType == RendererType.TEXTURE) {
             textureViewRenderer = new VideoTextureViewRenderer(getContext());
+            textureViewRenderer.setFrameRenderedListener(() -> WebRTCView.this.onTextureFrameRendered());
             rendererView = textureViewRenderer;
             rendererSink = textureViewRenderer;
         } else {
@@ -200,6 +209,7 @@ public class WebRTCView extends ViewGroup {
         if (rendererView != null) {
             removeView(rendererView);
         }
+        resetTextureResizeStabilization();
 
         createRenderer(nextRendererType);
         tryAddRendererToVideoTrack();
@@ -429,9 +439,87 @@ public class WebRTCView extends ViewGroup {
                     break;
             }
         }
-        if (rendererView != null) {
-            rendererView.layout(l, t, r, b);
+        layoutRendererView(l, t, r, b);
+    }
+
+    private void layoutRendererView(int left, int top, int right, int bottom) {
+        if (rendererView == null) return;
+
+        if (textureViewRenderer == null) {
+            rendererView.layout(left, top, right, bottom);
+            return;
         }
+
+        layoutTextureRendererView(left, top, right, bottom);
+    }
+
+    private void layoutTextureRendererView(int targetLeft, int targetTop, int targetRight, int targetBottom) {
+        int targetWidth = targetRight - targetLeft;
+        int targetHeight = targetBottom - targetTop;
+
+        if (targetWidth <= 0 || targetHeight <= 0) {
+            resetTextureResizeStabilization();
+            rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
+            textureViewRenderer.setLayoutAspectRatio(0f);
+            return;
+        }
+
+        float targetAspectRatio = targetWidth / (float) targetHeight;
+        int currentWidth = rendererView.getWidth();
+        int currentHeight = rendererView.getHeight();
+        boolean hasCurrentLayout = currentWidth > 0 && currentHeight > 0;
+        boolean isShrinking = hasCurrentLayout && (targetWidth < currentWidth || targetHeight < currentHeight);
+
+        if (!isShrinking) {
+            resetTextureResizeStabilization();
+            rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
+            textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+            return;
+        }
+
+        boolean targetChanged = !hasPendingTextureLayout
+                || pendingTextureLeft != targetLeft
+                || pendingTextureTop != targetTop
+                || pendingTextureRight != targetRight
+                || pendingTextureBottom != targetBottom;
+        if (targetChanged || textureResizeFramesUntilCommit == 0) {
+            textureResizeFramesUntilCommit = TEXTURE_RESIZE_STABILIZATION_FRAMES;
+        }
+
+        hasPendingTextureLayout = true;
+        pendingTextureLeft = targetLeft;
+        pendingTextureTop = targetTop;
+        pendingTextureRight = targetRight;
+        pendingTextureBottom = targetBottom;
+
+        int layoutWidth = Math.max(currentWidth, targetWidth);
+        int layoutHeight = Math.max(currentHeight, targetHeight);
+        int layoutLeft = targetLeft + (targetWidth - layoutWidth) / 2;
+        int layoutTop = targetTop + (targetHeight - layoutHeight) / 2;
+
+        rendererView.layout(layoutLeft, layoutTop, layoutLeft + layoutWidth, layoutTop + layoutHeight);
+        textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+    }
+
+    private void onTextureFrameRendered() {
+        if (!hasPendingTextureLayout || textureResizeFramesUntilCommit <= 0 || rendererView == null || textureViewRenderer == null) {
+            return;
+        }
+
+        textureResizeFramesUntilCommit--;
+        if (textureResizeFramesUntilCommit > 0) {
+            return;
+        }
+
+        int left = pendingTextureLeft;
+        int top = pendingTextureTop;
+        int right = pendingTextureRight;
+        int bottom = pendingTextureBottom;
+        resetTextureResizeStabilization();
+        rendererView.layout(left, top, right, bottom);
+
+        int height = bottom - top;
+        textureViewRenderer.setLayoutAspectRatio(height > 0 ? (right - left) / (float) height : 0f);
     }
 
     /**
@@ -466,6 +554,15 @@ public class WebRTCView extends ViewGroup {
             }
             requestSurfaceViewRendererLayout();
         }
+    }
+
+    private void resetTextureResizeStabilization() {
+        hasPendingTextureLayout = false;
+        textureResizeFramesUntilCommit = 0;
+        pendingTextureLeft = 0;
+        pendingTextureTop = 0;
+        pendingTextureRight = 0;
+        pendingTextureBottom = 0;
     }
 
     /**

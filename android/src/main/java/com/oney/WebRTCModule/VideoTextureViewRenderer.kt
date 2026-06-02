@@ -12,7 +12,6 @@ import android.view.TextureView
 import android.view.TextureView.SurfaceTextureListener
 import org.webrtc.EglBase
 import org.webrtc.EglRenderer
-import org.webrtc.EglRenderer.RenderListener
 import org.webrtc.GlRectDrawer
 import org.webrtc.RendererCommon.RendererEvents
 import org.webrtc.RendererCommon.ScalingType
@@ -47,11 +46,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var scalingType: ScalingType? = ScalingType.SCALE_ASPECT_FIT
     private var renderedLayoutAspectRatio = 0f
     private var targetLayoutAspectRatio = 0f
-    private var resizeRendersBeforeReset = 0
-    private var waitingForTextureUpdateAfterResizeRender = false
-    private val renderListener = RenderListener {
-        uiThreadHandler.post { onFrameRendered() }
-    }
+    private var textureUpdatesBeforeReset = 0
 
     init {
         surfaceTextureListener = this
@@ -68,7 +63,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         released = false
         this.rendererEvents = rendererEvents
         eglRenderer.init(sharedContext, EglBase.CONFIG_PLAIN, GlRectDrawer())
-        eglRenderer.addRenderListener(renderListener)
         if (isAvailable) {
             createEglSurfaceIfNeeded(surfaceTexture)
         }
@@ -84,11 +78,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         rotatedFrameHeight = 0
         frameRotation = 0
         rendererEvents = null
-        renderedLayoutAspectRatio = 0f
-        targetLayoutAspectRatio = 0f
-        resizeRendersBeforeReset = 0
-        waitingForTextureUpdateAfterResizeRender = false
-        resetResizeTransform()
         eglRenderer.release()
     }
 
@@ -166,11 +155,13 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     }
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
-        if (waitingForTextureUpdateAfterResizeRender) {
-            waitingForTextureUpdateAfterResizeRender = false
-            renderedLayoutAspectRatio = targetLayoutAspectRatio
-            resetResizeTransform()
-        } else if (resizeRendersBeforeReset == 0 && targetLayoutAspectRatio > 0f) {
+        if (textureUpdatesBeforeReset > 0) {
+            textureUpdatesBeforeReset -= 1
+            if (textureUpdatesBeforeReset == 0) {
+                renderedLayoutAspectRatio = targetLayoutAspectRatio
+                resetResizeTransform()
+            }
+        } else if (targetLayoutAspectRatio > 0f) {
             renderedLayoutAspectRatio = targetLayoutAspectRatio
         }
     }
@@ -186,17 +177,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         hasEglSurface = true
     }
 
-    private fun onFrameRendered() {
-        if (resizeRendersBeforeReset > 0) {
-            resizeRendersBeforeReset -= 1
-            if (resizeRendersBeforeReset == 0) {
-                waitingForTextureUpdateAfterResizeRender = true
-            }
-        } else if (!waitingForTextureUpdateAfterResizeRender && targetLayoutAspectRatio > 0f) {
-            renderedLayoutAspectRatio = targetLayoutAspectRatio
-        }
-    }
-
     private fun updateResizeTransform() {
         val viewWidth = width
         val viewHeight = height
@@ -210,7 +190,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             nextAspectRatio <= 0f ||
             aspectRatioEquals(previousAspectRatio, nextAspectRatio)
         ) {
-            if (resizeRendersBeforeReset == 0 && !waitingForTextureUpdateAfterResizeRender) {
+            if (textureUpdatesBeforeReset == 0) {
                 resetResizeTransform()
             }
             if (previousAspectRatio <= 0f && nextAspectRatio > 0f) {
@@ -220,8 +200,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         }
 
         applyResizeTransform(previousAspectRatio, nextAspectRatio, viewWidth, viewHeight)
-        resizeRendersBeforeReset = RESIZE_TRANSFORM_RENDER_COUNT
-        waitingForTextureUpdateAfterResizeRender = false
+        textureUpdatesBeforeReset = RESIZE_TRANSFORM_TEXTURE_UPDATES
     }
 
     private fun applyResizeTransform(
@@ -302,6 +281,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     private companion object {
         private const val ASPECT_RATIO_EPSILON = 0.001f
-        private const val RESIZE_TRANSFORM_RENDER_COUNT = 2
+        private const val RESIZE_TRANSFORM_TEXTURE_UPDATES = 2
     }
 }

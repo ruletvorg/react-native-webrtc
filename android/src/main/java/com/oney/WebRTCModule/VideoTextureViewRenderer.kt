@@ -2,6 +2,7 @@ package com.oney.WebRTCModule
 
 import android.content.Context
 import android.content.res.Resources
+import android.graphics.Matrix
 import android.graphics.Point
 import android.graphics.SurfaceTexture
 import android.os.Handler
@@ -33,6 +34,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private val videoLayoutMeasure = VideoLayoutMeasure()
     private val eglRenderer: EglRenderer = EglRenderer(resourceName)
     private val uiThreadHandler = Handler(Looper.getMainLooper())
+    private val textureTransform = Matrix()
 
     private var rendererEvents: RendererEvents? = null
     private var isFirstFrameRendered = false
@@ -41,6 +43,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var frameRotation = 0
     private var released = true
     private var hasEglSurface = false
+    private var scalingType: ScalingType? = ScalingType.SCALE_ASPECT_FIT
+    private var renderedLayoutAspectRatio = 0f
+    private var targetLayoutAspectRatio = 0f
+    private var textureUpdatesBeforeReset = 0
 
     init {
         surfaceTextureListener = this
@@ -87,7 +93,9 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     fun setScalingType(scalingType: ScalingType?) {
         ThreadUtils.checkIsOnMainThread()
+        this.scalingType = scalingType
         videoLayoutMeasure.setScalingType(scalingType)
+        updateResizeTransform()
         requestLayout()
     }
 
@@ -109,10 +117,18 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        ThreadUtils.checkIsOnMainThread()
         val width = right - left
         val height = bottom - top
         if (height > 0) {
-            eglRenderer.setLayoutAspectRatio(width / height.toFloat())
+            val nextAspectRatio = width / height.toFloat()
+            targetLayoutAspectRatio = nextAspectRatio
+            eglRenderer.setLayoutAspectRatio(nextAspectRatio)
+            updateResizeTransform()
+        } else {
+            targetLayoutAspectRatio = 0f
+            eglRenderer.setLayoutAspectRatio(0f)
+            resetResizeTransform()
         }
     }
 
@@ -130,9 +146,25 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         return true
     }
 
-    override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) = Unit
+    override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        if (height > 0) {
+            targetLayoutAspectRatio = width / height.toFloat()
+            eglRenderer.setLayoutAspectRatio(targetLayoutAspectRatio)
+            updateResizeTransform()
+        }
+    }
 
-    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
+    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
+        if (textureUpdatesBeforeReset > 0) {
+            textureUpdatesBeforeReset -= 1
+            if (textureUpdatesBeforeReset == 0) {
+                renderedLayoutAspectRatio = targetLayoutAspectRatio
+                resetResizeTransform()
+            }
+        } else if (targetLayoutAspectRatio > 0f) {
+            renderedLayoutAspectRatio = targetLayoutAspectRatio
+        }
+    }
 
     override fun onDetachedFromWindow() {
         release()
@@ -143,6 +175,74 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         if (released || hasEglSurface || surfaceTexture == null) return
         eglRenderer.createEglSurface(surfaceTexture)
         hasEglSurface = true
+    }
+
+    private fun updateResizeTransform() {
+        val viewWidth = width
+        val viewHeight = height
+        val previousAspectRatio = renderedLayoutAspectRatio
+        val nextAspectRatio = targetLayoutAspectRatio
+
+        if (
+            viewWidth <= 0 ||
+            viewHeight <= 0 ||
+            previousAspectRatio <= 0f ||
+            nextAspectRatio <= 0f ||
+            aspectRatioEquals(previousAspectRatio, nextAspectRatio)
+        ) {
+            if (textureUpdatesBeforeReset == 0) {
+                resetResizeTransform()
+            }
+            if (previousAspectRatio <= 0f && nextAspectRatio > 0f) {
+                renderedLayoutAspectRatio = nextAspectRatio
+            }
+            return
+        }
+
+        applyResizeTransform(previousAspectRatio, nextAspectRatio, viewWidth, viewHeight)
+        textureUpdatesBeforeReset = RESIZE_TRANSFORM_TEXTURE_UPDATES
+    }
+
+    private fun applyResizeTransform(
+        contentAspectRatio: Float,
+        viewAspectRatio: Float,
+        width: Int,
+        height: Int,
+    ) {
+        val scale = contentAspectRatio / viewAspectRatio
+        val scaleX: Float
+        val scaleY: Float
+
+        if (scalingType == ScalingType.SCALE_ASPECT_FILL) {
+            if (scale > 1f) {
+                scaleX = scale
+                scaleY = 1f
+            } else {
+                scaleX = 1f
+                scaleY = 1f / scale
+            }
+        } else {
+            if (scale > 1f) {
+                scaleX = 1f
+                scaleY = 1f / scale
+            } else {
+                scaleX = scale
+                scaleY = 1f
+            }
+        }
+
+        textureTransform.reset()
+        textureTransform.setScale(scaleX, scaleY, width / 2f, height / 2f)
+        setTransform(textureTransform)
+    }
+
+    private fun resetResizeTransform() {
+        textureTransform.reset()
+        setTransform(textureTransform)
+    }
+
+    private fun aspectRatioEquals(first: Float, second: Float): Boolean {
+        return kotlin.math.abs(first - second) < ASPECT_RATIO_EPSILON
     }
 
     private fun updateFrameData(videoFrame: VideoFrame) {
@@ -177,5 +277,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         } catch (e: Resources.NotFoundException) {
             ""
         }
+    }
+
+    private companion object {
+        private const val ASPECT_RATIO_EPSILON = 0.001f
+        private const val RESIZE_TRANSFORM_TEXTURE_UPDATES = 2
     }
 }

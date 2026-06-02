@@ -1,0 +1,27 @@
+node_modules
+xcuserdata
+project.xcworkspace
+.vscode
+.DS_Store
+.idea
+.gradle
+local.properties
+android/build
+Podfile.lock
+WebRTC.xcframework
+WebRTC.dSYMs
+examples/GumTestApp/package-lock.json
+examples/GumTestApp_macOS/package-lock.json
+*.jar
+*.tgz
+*.zip
+src/*.js
+# Android/IntelliJ
+#
+build/
+.idea
+.gradle
+local.properties
+*.iml
+*.hprof
+.cxx/

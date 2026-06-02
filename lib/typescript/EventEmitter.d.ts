@@ -1,0 +1,6 @@
+export declare function setupNativeEvents(): void;
+type EventHandler = (event: unknown) => void;
+type Listener = unknown;
+export declare function addListener(listener: Listener, eventName: string, eventHandler: EventHandler): void;
+export declare function removeListener(listener: Listener): void;
+export {};

@@ -260,14 +260,18 @@ public class WebRTCView extends ViewGroup {
         }
     }
 
+    private void setSurfaceRendererBackgroundColor(int color) {
+        if (surfaceViewRenderer != null) {
+            surfaceViewRenderer.setBackgroundColor(color);
+        }
+    }
+
     /**
      * "Cleans" the {@code SurfaceViewRenderer} by setting the view part to
      * opaque black and the surface part to transparent.
      */
     private void cleanSurfaceViewRenderer() {
-        if (rendererView != null) {
-            rendererView.setBackgroundColor(Color.BLACK);
-        }
+        setSurfaceRendererBackgroundColor(Color.BLACK);
         if (surfaceViewRenderer != null) {
             surfaceViewRenderer.clearImage();
         } else if (textureViewRenderer != null) {
@@ -336,9 +340,7 @@ public class WebRTCView extends ViewGroup {
     private void onFirstFrameRendered() {
         post(() -> {
             Log.d(TAG, "First frame rendered.");
-            if (rendererView != null) {
-                rendererView.setBackgroundColor(Color.TRANSPARENT);
-            }
+            setSurfaceRendererBackgroundColor(Color.TRANSPARENT);
         });
     }
 

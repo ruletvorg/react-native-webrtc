@@ -43,9 +43,12 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var frameRotation = 0
     private var released = true
     private var hasEglSurface = false
-    private var scalingType: ScalingType? = ScalingType.SCALE_ASPECT_FIT
     private var renderedLayoutAspectRatio = 0f
     private var targetLayoutAspectRatio = 0f
+    private var renderedViewWidth = 0
+    private var renderedViewHeight = 0
+    private var targetViewWidth = 0
+    private var targetViewHeight = 0
     private var textureUpdatesBeforeReset = 0
 
     init {
@@ -93,7 +96,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     fun setScalingType(scalingType: ScalingType?) {
         ThreadUtils.checkIsOnMainThread()
-        this.scalingType = scalingType
         videoLayoutMeasure.setScalingType(scalingType)
         updateResizeTransform()
         requestLayout()
@@ -123,16 +125,22 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         if (height > 0) {
             val nextAspectRatio = width / height.toFloat()
             targetLayoutAspectRatio = nextAspectRatio
+            targetViewWidth = width
+            targetViewHeight = height
+            surfaceTexture?.let { updateSurfaceTextureBufferSize(it, width, height) }
             eglRenderer.setLayoutAspectRatio(nextAspectRatio)
             updateResizeTransform()
         } else {
             targetLayoutAspectRatio = 0f
+            targetViewWidth = 0
+            targetViewHeight = 0
             eglRenderer.setLayoutAspectRatio(0f)
             resetResizeTransform()
         }
     }
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        updateSurfaceTextureBufferSize(surfaceTexture, width, height)
         createEglSurfaceIfNeeded(surfaceTexture)
     }
 
@@ -148,7 +156,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
         if (height > 0) {
+            updateSurfaceTextureBufferSize(surfaceTexture, width, height)
             targetLayoutAspectRatio = width / height.toFloat()
+            targetViewWidth = width
+            targetViewHeight = height
             eglRenderer.setLayoutAspectRatio(targetLayoutAspectRatio)
             updateResizeTransform()
         }
@@ -158,11 +169,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         if (textureUpdatesBeforeReset > 0) {
             textureUpdatesBeforeReset -= 1
             if (textureUpdatesBeforeReset == 0) {
-                renderedLayoutAspectRatio = targetLayoutAspectRatio
-                resetResizeTransform()
+                acceptTargetLayout()
             }
         } else if (targetLayoutAspectRatio > 0f) {
-            renderedLayoutAspectRatio = targetLayoutAspectRatio
+            acceptTargetLayout()
         }
     }
 
@@ -177,62 +187,50 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         hasEglSurface = true
     }
 
-    private fun updateResizeTransform() {
-        val viewWidth = width
-        val viewHeight = height
-        val previousAspectRatio = renderedLayoutAspectRatio
-        val nextAspectRatio = targetLayoutAspectRatio
+    private fun updateSurfaceTextureBufferSize(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            surfaceTexture.setDefaultBufferSize(width, height)
+        }
+    }
 
-        if (
-            viewWidth <= 0 ||
-            viewHeight <= 0 ||
-            previousAspectRatio <= 0f ||
-            nextAspectRatio <= 0f ||
-            aspectRatioEquals(previousAspectRatio, nextAspectRatio)
-        ) {
-            if (textureUpdatesBeforeReset == 0) {
-                resetResizeTransform()
-            }
-            if (previousAspectRatio <= 0f && nextAspectRatio > 0f) {
-                renderedLayoutAspectRatio = nextAspectRatio
-            }
+    private fun acceptTargetLayout() {
+        renderedLayoutAspectRatio = targetLayoutAspectRatio
+        renderedViewWidth = targetViewWidth
+        renderedViewHeight = targetViewHeight
+        resetResizeTransform()
+    }
+
+    private fun updateResizeTransform() {
+        if (targetViewWidth <= 0 || targetViewHeight <= 0 || targetLayoutAspectRatio <= 0f) {
+            textureUpdatesBeforeReset = 0
+            resetResizeTransform()
             return
         }
 
-        applyResizeTransform(previousAspectRatio, nextAspectRatio, viewWidth, viewHeight)
-        textureUpdatesBeforeReset = RESIZE_TRANSFORM_TEXTURE_UPDATES
-    }
-
-    private fun applyResizeTransform(
-        contentAspectRatio: Float,
-        viewAspectRatio: Float,
-        width: Int,
-        height: Int,
-    ) {
-        val scale = contentAspectRatio / viewAspectRatio
-        val scaleX: Float
-        val scaleY: Float
-
-        if (scalingType == ScalingType.SCALE_ASPECT_FILL) {
-            if (scale > 1f) {
-                scaleX = scale
-                scaleY = 1f
-            } else {
-                scaleX = 1f
-                scaleY = 1f / scale
-            }
-        } else {
-            if (scale > 1f) {
-                scaleX = 1f
-                scaleY = 1f / scale
-            } else {
-                scaleX = scale
-                scaleY = 1f
-            }
+        if (renderedViewWidth <= 0 || renderedViewHeight <= 0 || renderedLayoutAspectRatio <= 0f) {
+            acceptTargetLayout()
+            return
         }
 
+        if (aspectRatioEquals(renderedLayoutAspectRatio, targetLayoutAspectRatio)) {
+            acceptTargetLayout()
+            return
+        }
+
+        if (targetViewWidth < renderedViewWidth || targetViewHeight < renderedViewHeight) {
+            applyResizeTransform()
+            textureUpdatesBeforeReset = RESIZE_TRANSFORM_TEXTURE_UPDATES
+        } else {
+            textureUpdatesBeforeReset = 0
+            acceptTargetLayout()
+        }
+    }
+
+    private fun applyResizeTransform() {
+        val scaleX = renderedViewWidth / targetViewWidth.toFloat()
+        val scaleY = renderedViewHeight / targetViewHeight.toFloat()
         textureTransform.reset()
-        textureTransform.setScale(scaleX, scaleY, width / 2f, height / 2f)
+        textureTransform.setScale(scaleX, scaleY, targetViewWidth / 2f, targetViewHeight / 2f)
         setTransform(textureTransform)
     }
 

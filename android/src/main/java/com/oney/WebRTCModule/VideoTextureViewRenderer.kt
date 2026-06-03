@@ -7,8 +7,10 @@ import android.graphics.SurfaceTexture
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
+import android.util.Log
 import android.view.TextureView
 import android.view.TextureView.SurfaceTextureListener
+import androidx.core.view.ViewCompat
 import org.webrtc.EglBase
 import org.webrtc.EglRenderer
 import org.webrtc.GlRectDrawer
@@ -29,6 +31,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : TextureView(context, attrs), VideoSink, SurfaceTextureListener {
+    companion object {
+        private const val TAG = "VideoTextureViewRenderer"
+    }
+
     private val resourceName: String = getResourceName()
     private val videoLayoutMeasure = VideoLayoutMeasure()
     private val eglRenderer: EglRenderer = EglRenderer(resourceName)
@@ -47,6 +53,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var frameRotation = 0
     private var released = true
     private var hasEglSurface = false
+    private var surfaceGeneration = 0
     private var renderListenerAdded = false
 
     init {
@@ -69,13 +76,15 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             renderListenerAdded = true
         }
         if (isAvailable) {
-            createEglSurfaceIfNeeded(surfaceTexture)
+            scheduleCreateEglSurface(surfaceTexture)
         }
     }
 
     fun release() {
         ThreadUtils.checkIsOnMainThread()
         if (released) return
+        surfaceGeneration++
+        releaseEglSurface()
         released = true
         hasEglSurface = false
         isFirstFrameRendered = false
@@ -141,16 +150,12 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     }
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
-        createEglSurfaceIfNeeded(surfaceTexture)
+        scheduleCreateEglSurface(surfaceTexture)
     }
 
     override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
-        if (!released && hasEglSurface) {
-            val completionLatch = CountDownLatch(1)
-            eglRenderer.releaseEglSurface { completionLatch.countDown() }
-            ThreadUtils.awaitUninterruptibly(completionLatch)
-            hasEglSurface = false
-        }
+        surfaceGeneration++
+        releaseEglSurface()
         return true
     }
 
@@ -159,14 +164,48 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
 
     override fun onDetachedFromWindow() {
+        surfaceGeneration++
         release()
         super.onDetachedFromWindow()
     }
 
-    private fun createEglSurfaceIfNeeded(surfaceTexture: SurfaceTexture?) {
+    private fun scheduleCreateEglSurface(surfaceTexture: SurfaceTexture?) {
         if (released || hasEglSurface || surfaceTexture == null) return
+
+        val generation = ++surfaceGeneration
+        uiThreadHandler.post {
+            createEglSurfaceIfCurrent(surfaceTexture, generation)
+        }
+    }
+
+    private fun createEglSurfaceIfCurrent(surfaceTexture: SurfaceTexture, generation: Int) {
+        if (
+            released ||
+            hasEglSurface ||
+            generation != surfaceGeneration ||
+            !isAvailable ||
+            !ViewCompat.isAttachedToWindow(this) ||
+            this.surfaceTexture !== surfaceTexture
+        ) {
+            return
+        }
+
         eglRenderer.createEglSurface(surfaceTexture)
         hasEglSurface = true
+    }
+
+    private fun releaseEglSurface() {
+        if (released) return
+
+        try {
+            val completionLatch = CountDownLatch(1)
+            eglRenderer.releaseEglSurface { completionLatch.countDown() }
+            ThreadUtils.awaitUninterruptibly(completionLatch)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to release EGL surface.", t)
+        } finally {
+            hasEglSurface = false
+        }
     }
 
     private fun updateFrameData(videoFrame: VideoFrame) {

@@ -2,13 +2,11 @@ package com.oney.WebRTCModule;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageView;
 
 import androidx.core.view.ViewCompat;
 
@@ -177,8 +175,6 @@ public class WebRTCView extends ViewGroup {
     private int pendingTextureLeft;
     private int pendingTextureRight;
     private int pendingTextureTop;
-    private Bitmap textureResizeSnapshotBitmap;
-    private ImageView textureResizeSnapshotView;
     private int textureResizeFramesUntilCommit;
 
     /**
@@ -188,8 +184,6 @@ public class WebRTCView extends ViewGroup {
 
     public WebRTCView(Context context) {
         super(context);
-        setClipChildren(true);
-        setClipToPadding(true);
 
         createRenderer(RendererType.SURFACE);
 
@@ -526,14 +520,12 @@ public class WebRTCView extends ViewGroup {
         textureViewRenderer.setLayoutAspectRatio(layoutWidth / (float) layoutHeight);
 
         if (!ensurePendingTextureRenderer()) {
-            removeTextureResizeSnapshot();
             return;
         }
 
         pendingTextureViewRenderer.layout(targetLeft, targetTop, targetRight, targetBottom);
         pendingTextureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
         rendererView.bringToFront();
-        showTextureResizeSnapshot(targetLeft, targetTop, targetRight, targetBottom);
         tryAddPendingTextureRendererToVideoTrack();
     }
 
@@ -585,7 +577,6 @@ public class WebRTCView extends ViewGroup {
         int height = bottom - top;
         textureViewRenderer.setLayoutAspectRatio(height > 0 ? (right - left) / (float) height : 0f);
         textureViewRenderer.bringToFront();
-        removeTextureResizeSnapshot();
 
         if (oldRendererAttached && oldRendererSink != null && videoTrack != null) {
             removeSinkFromVideoTrack(videoTrack, oldRendererSink);
@@ -652,7 +643,6 @@ public class WebRTCView extends ViewGroup {
         pendingTextureRight = 0;
         pendingTextureBottom = 0;
         removePendingTextureRenderer();
-        removeTextureResizeSnapshot();
     }
 
     private VideoTextureViewRenderer createTextureRenderer() {
@@ -671,37 +661,6 @@ public class WebRTCView extends ViewGroup {
         pendingTextureViewRenderer.setFrameRenderedListener(() -> WebRTCView.this.onPendingTextureFrameRendered());
         addView(pendingTextureViewRenderer, 0);
         return true;
-    }
-
-    private void showTextureResizeSnapshot(int left, int top, int right, int bottom) {
-        if (textureResizeSnapshotView == null) {
-            Bitmap snapshot = textureViewRenderer.copyCurrentFrameBitmap();
-            if (snapshot == null) return;
-
-            textureResizeSnapshotBitmap = snapshot;
-            textureResizeSnapshotView = new ImageView(getContext());
-            textureResizeSnapshotView.setClickable(false);
-            textureResizeSnapshotView.setFocusable(false);
-            textureResizeSnapshotView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            textureResizeSnapshotView.setImageBitmap(textureResizeSnapshotBitmap);
-            addView(textureResizeSnapshotView);
-        }
-
-        textureResizeSnapshotView.layout(left, top, right, bottom);
-        textureResizeSnapshotView.bringToFront();
-    }
-
-    private void removeTextureResizeSnapshot() {
-        if (textureResizeSnapshotView != null) {
-            textureResizeSnapshotView.setImageDrawable(null);
-            removeView(textureResizeSnapshotView);
-            textureResizeSnapshotView = null;
-        }
-
-        if (textureResizeSnapshotBitmap != null) {
-            textureResizeSnapshotBitmap.recycle();
-            textureResizeSnapshotBitmap = null;
-        }
     }
 
     private void tryAddPendingTextureRendererToVideoTrack() {

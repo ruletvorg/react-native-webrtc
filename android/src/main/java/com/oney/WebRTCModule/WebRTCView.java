@@ -2,13 +2,11 @@ package com.oney.WebRTCModule;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageView;
 
 import androidx.core.view.ViewCompat;
 
@@ -52,7 +50,7 @@ public class WebRTCView extends ViewGroup {
      */
     private static final ScalingType DEFAULT_SCALING_TYPE = ScalingType.SCALE_ASPECT_FIT;
 
-    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 2;
+    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 3;
 
     private static final String TAG = WebRTCModule.TAG;
 
@@ -117,6 +115,16 @@ public class WebRTCView extends ViewGroup {
         }
     };
 
+    private final RendererEvents noopRendererEvents = new RendererEvents() {
+        @Override
+        public void onFirstFrameRendered() {
+        }
+
+        @Override
+        public void onFrameResolutionChanged(int videoWidth, int videoHeight, int rotation) {
+        }
+    };
+
     /**
      * The {@code Runnable} representation of
      * {@link #requestSurfaceViewRendererLayout()}. Explicitly defined in order
@@ -159,15 +167,15 @@ public class WebRTCView extends ViewGroup {
     private VideoSink rendererSink;
     private SurfaceViewRenderer surfaceViewRenderer;
     private VideoTextureViewRenderer textureViewRenderer;
+    private VideoTextureViewRenderer pendingTextureViewRenderer;
+    private boolean pendingTextureRendererAttached;
+    private boolean pendingTextureRendererInitialized;
     private boolean hasPendingTextureLayout;
     private int pendingTextureBottom;
     private int pendingTextureLeft;
     private int pendingTextureRight;
     private int pendingTextureTop;
     private int textureResizeFramesUntilCommit;
-    private Bitmap textureResizeSnapshotBitmap;
-    private ImageView textureResizeSnapshotView;
-    private boolean textureResizeSnapshotVisible;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -189,7 +197,7 @@ public class WebRTCView extends ViewGroup {
         textureViewRenderer = null;
 
         if (rendererType == RendererType.TEXTURE) {
-            textureViewRenderer = new VideoTextureViewRenderer(getContext());
+            textureViewRenderer = createTextureRenderer();
             textureViewRenderer.setFrameRenderedListener(() -> WebRTCView.this.onTextureFrameRendered());
             rendererView = textureViewRenderer;
             rendererSink = textureViewRenderer;
@@ -201,9 +209,6 @@ public class WebRTCView extends ViewGroup {
         }
 
         addView(rendererView);
-        if (textureViewRenderer != null) {
-            ensureTextureResizeSnapshotView();
-        }
         applyMirror();
         if (scalingType != null) {
             applyScalingType();
@@ -218,7 +223,6 @@ public class WebRTCView extends ViewGroup {
             removeView(rendererView);
         }
         resetTextureResizeStabilization();
-        removeTextureResizeSnapshotView();
 
         createRenderer(nextRendererType);
         tryAddRendererToVideoTrack();
@@ -231,6 +235,9 @@ public class WebRTCView extends ViewGroup {
         } else if (textureViewRenderer != null) {
             textureViewRenderer.setMirror(mirror);
         }
+        if (pendingTextureViewRenderer != null) {
+            pendingTextureViewRenderer.setMirror(mirror);
+        }
     }
 
     private void applyScalingType() {
@@ -238,6 +245,9 @@ public class WebRTCView extends ViewGroup {
             surfaceViewRenderer.setScalingType(scalingType);
         } else if (textureViewRenderer != null) {
             textureViewRenderer.setScalingType(scalingType);
+        }
+        if (pendingTextureViewRenderer != null) {
+            pendingTextureViewRenderer.setScalingType(scalingType);
         }
     }
 
@@ -507,15 +517,23 @@ public class WebRTCView extends ViewGroup {
         int layoutTop = targetTop + (targetHeight - layoutHeight) / 2;
 
         rendererView.layout(layoutLeft, layoutTop, layoutLeft + layoutWidth, layoutTop + layoutHeight);
-    }
+        textureViewRenderer.setLayoutAspectRatio(layoutWidth / (float) layoutHeight);
 
-    private void onTextureFrameRendered() {
-        if (textureResizeSnapshotVisible) {
-            hideTextureResizeSnapshot();
+        if (!ensurePendingTextureRenderer()) {
             return;
         }
 
-        if (!hasPendingTextureLayout || textureResizeFramesUntilCommit <= 0 || rendererView == null || textureViewRenderer == null) {
+        pendingTextureViewRenderer.layout(targetLeft, targetTop, targetRight, targetBottom);
+        pendingTextureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+        rendererView.bringToFront();
+        tryAddPendingTextureRendererToVideoTrack();
+    }
+
+    private void onTextureFrameRendered() {
+    }
+
+    private void onPendingTextureFrameRendered() {
+        if (!hasPendingTextureLayout || textureResizeFramesUntilCommit <= 0 || pendingTextureViewRenderer == null) {
             return;
         }
 
@@ -528,13 +546,51 @@ public class WebRTCView extends ViewGroup {
         int top = pendingTextureTop;
         int right = pendingTextureRight;
         int bottom = pendingTextureBottom;
+        commitPendingTextureRenderer(left, top, right, bottom);
+    }
+
+    private void commitPendingTextureRenderer(int left, int top, int right, int bottom) {
+        if (pendingTextureViewRenderer == null) return;
+
+        VideoTextureViewRenderer oldTextureViewRenderer = textureViewRenderer;
+        View oldRendererView = rendererView;
+        VideoSink oldRendererSink = rendererSink;
+        boolean oldRendererAttached = rendererAttached;
+
+        textureViewRenderer = pendingTextureViewRenderer;
+        rendererView = pendingTextureViewRenderer;
+        rendererSink = pendingTextureViewRenderer;
+        rendererAttached = pendingTextureRendererAttached;
+
+        pendingTextureViewRenderer = null;
+        pendingTextureRendererAttached = false;
+        pendingTextureRendererInitialized = false;
         hasPendingTextureLayout = false;
         textureResizeFramesUntilCommit = 0;
-        showTextureResizeSnapshot();
-        rendererView.layout(left, top, right, bottom);
+        pendingTextureLeft = 0;
+        pendingTextureTop = 0;
+        pendingTextureRight = 0;
+        pendingTextureBottom = 0;
 
+        textureViewRenderer.setFrameRenderedListener(() -> WebRTCView.this.onTextureFrameRendered());
+        textureViewRenderer.layout(left, top, right, bottom);
         int height = bottom - top;
         textureViewRenderer.setLayoutAspectRatio(height > 0 ? (right - left) / (float) height : 0f);
+        textureViewRenderer.bringToFront();
+
+        if (oldRendererAttached && oldRendererSink != null && videoTrack != null) {
+            removeSinkFromVideoTrack(videoTrack, oldRendererSink);
+        }
+        if (oldTextureViewRenderer != null) {
+            oldTextureViewRenderer.setFrameRenderedListener(null);
+            oldTextureViewRenderer.release();
+            if (oldRendererAttached) {
+                surfaceViewRendererInstances--;
+            }
+        }
+        if (oldRendererView != null) {
+            removeView(oldRendererView);
+        }
     }
 
     /**
@@ -542,19 +598,13 @@ public class WebRTCView extends ViewGroup {
      * resources (if rendering is in progress).
      */
     private void removeRendererFromVideoTrack() {
+        removePendingTextureRenderer();
+
         if (rendererAttached) {
             if (videoTrack != null) {
                 final VideoSink sink = rendererSink;
                 final VideoTrack track = videoTrack;
-                ThreadUtils.runOnExecutor(() -> {
-                    try {
-                        track.removeSink(sink);
-                    } catch (Throwable tr) {
-                        // XXX If WebRTCModule#mediaStreamTrackRelease has already been
-                        // invoked on videoTrack, then it is no longer safe to call removeSink
-                        // on the instance, it will throw IllegalStateException.
-                    }
-                });
+                removeSinkFromVideoTrack(track, sink);
             }
 
             releaseRenderer();
@@ -571,73 +621,109 @@ public class WebRTCView extends ViewGroup {
         }
     }
 
+    private void removeSinkFromVideoTrack(VideoTrack track, VideoSink sink) {
+        if (track == null || sink == null) return;
+
+        ThreadUtils.runOnExecutor(() -> {
+            try {
+                track.removeSink(sink);
+            } catch (Throwable tr) {
+                // XXX If WebRTCModule#mediaStreamTrackRelease has already been
+                // invoked on videoTrack, then it is no longer safe to call removeSink
+                // on the instance, it will throw IllegalStateException.
+            }
+        });
+    }
+
     private void resetTextureResizeStabilization() {
         hasPendingTextureLayout = false;
         textureResizeFramesUntilCommit = 0;
-        hideTextureResizeSnapshot();
         pendingTextureLeft = 0;
         pendingTextureTop = 0;
         pendingTextureRight = 0;
         pendingTextureBottom = 0;
+        removePendingTextureRenderer();
     }
 
-    private void ensureTextureResizeSnapshotView() {
-        if (textureResizeSnapshotView != null) return;
-
-        textureResizeSnapshotView = new ImageView(getContext());
-        textureResizeSnapshotView.setScaleType(ImageView.ScaleType.FIT_XY);
-        textureResizeSnapshotView.setVisibility(View.GONE);
-        addView(textureResizeSnapshotView);
+    private VideoTextureViewRenderer createTextureRenderer() {
+        VideoTextureViewRenderer renderer = new VideoTextureViewRenderer(getContext());
+        renderer.setMirror(mirror);
+        if (scalingType != null) {
+            renderer.setScalingType(scalingType);
+        }
+        return renderer;
     }
 
-    private void showTextureResizeSnapshot() {
-        if (textureViewRenderer == null || rendererView == null) return;
+    private boolean ensurePendingTextureRenderer() {
+        if (pendingTextureViewRenderer != null) return true;
 
-        Bitmap snapshot;
-        try {
-            snapshot = textureViewRenderer.getBitmap();
-        } catch (Throwable tr) {
-            Log.w(TAG, "Failed to capture TextureView resize snapshot.", tr);
+        pendingTextureViewRenderer = createTextureRenderer();
+        pendingTextureViewRenderer.setFrameRenderedListener(() -> WebRTCView.this.onPendingTextureFrameRendered());
+        addView(pendingTextureViewRenderer, 0);
+        return true;
+    }
+
+    private void tryAddPendingTextureRendererToVideoTrack() {
+        if (pendingTextureRendererAttached
+                || pendingTextureViewRenderer == null
+                || videoTrack == null
+                || !ViewCompat.isAttachedToWindow(this)) {
             return;
         }
 
-        if (snapshot == null) return;
+        EglBase.Context sharedContext = EglUtils.getRootEglBaseContext();
+        if (sharedContext == null) {
+            Log.e(TAG, "Failed to initialize pending TextureView renderer.");
+            removePendingTextureRenderer();
+            return;
+        }
 
-        hideTextureResizeSnapshot();
-        ensureTextureResizeSnapshotView();
-        textureResizeSnapshotBitmap = snapshot;
-        textureResizeSnapshotVisible = true;
+        try {
+            pendingTextureViewRenderer.init(sharedContext, noopRendererEvents);
+            pendingTextureRendererInitialized = true;
+            surfaceViewRendererInstances++;
+        } catch (Exception e) {
+            Logging.e(TAG, "Failed to initialize pending TextureView renderer", e);
+            removePendingTextureRenderer();
+            return;
+        }
 
-        textureResizeSnapshotView.setImageBitmap(snapshot);
-        textureResizeSnapshotView.setVisibility(View.VISIBLE);
-        textureResizeSnapshotView.layout(
-                rendererView.getLeft(),
-                rendererView.getTop(),
-                rendererView.getRight(),
-                rendererView.getBottom());
-        textureResizeSnapshotView.bringToFront();
+        final VideoSink sink = pendingTextureViewRenderer;
+        final VideoTrack track = videoTrack;
+        ThreadUtils.runOnExecutor(() -> {
+            try {
+                track.addSink(sink);
+            } catch (Throwable tr) {
+                Log.e(TAG, "Failed to add pending TextureView renderer", tr);
+            }
+        });
+
+        pendingTextureRendererAttached = true;
     }
 
-    private void hideTextureResizeSnapshot() {
-        textureResizeSnapshotVisible = false;
+    private void removePendingTextureRenderer() {
+        if (pendingTextureViewRenderer == null) return;
 
-        if (textureResizeSnapshotView != null) {
-            textureResizeSnapshotView.setVisibility(View.GONE);
-            textureResizeSnapshotView.setImageBitmap(null);
+        if (pendingTextureRendererAttached && videoTrack != null) {
+            removeSinkFromVideoTrack(videoTrack, pendingTextureViewRenderer);
         }
 
-        if (textureResizeSnapshotBitmap != null) {
-            textureResizeSnapshotBitmap.recycle();
-            textureResizeSnapshotBitmap = null;
+        pendingTextureViewRenderer.setFrameRenderedListener(null);
+        if (pendingTextureRendererInitialized) {
+            pendingTextureViewRenderer.release();
+            surfaceViewRendererInstances--;
         }
-    }
+        removeView(pendingTextureViewRenderer);
 
-    private void removeTextureResizeSnapshotView() {
-        hideTextureResizeSnapshot();
-        if (textureResizeSnapshotView != null) {
-            removeView(textureResizeSnapshotView);
-            textureResizeSnapshotView = null;
-        }
+        pendingTextureViewRenderer = null;
+        pendingTextureRendererAttached = false;
+        pendingTextureRendererInitialized = false;
+        hasPendingTextureLayout = false;
+        textureResizeFramesUntilCommit = 0;
+        pendingTextureLeft = 0;
+        pendingTextureTop = 0;
+        pendingTextureRight = 0;
+        pendingTextureBottom = 0;
     }
 
     /**

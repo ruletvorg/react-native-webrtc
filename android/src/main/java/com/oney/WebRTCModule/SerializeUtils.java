@@ -250,7 +250,8 @@ public class SerializeUtils {
             encoding.scaleResolutionDownBy = scaleResolutionDownBy;
         }
 
-        if (updateParams.hasKey("degradationPreference")) {
+        if (updateParams.hasKey("degradationPreference")
+                && updateParams.getType("degradationPreference") == ReadableType.String) {
             rtpParams.degradationPreference =
                     RtpParameters.DegradationPreference.valueOf(updateParams.getString("degradationPreference"));
         }

@@ -52,6 +52,7 @@ public class WebRTCView extends ViewGroup {
      */
     private static final ScalingType DEFAULT_SCALING_TYPE = ScalingType.SCALE_ASPECT_FIT;
 
+    private static final int TEXTURE_STARTUP_STABILIZATION_FRAMES = 2;
     private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 3;
     private static final long TEXTURE_RESIZE_BLACK_FADE_OUT_MS = 160;
 
@@ -180,6 +181,14 @@ public class WebRTCView extends ViewGroup {
     private int pendingTextureTop;
     private View textureResizeBlackOverlayView;
     private int textureResizeFramesUntilCommit;
+    private boolean textureStartupFadePending;
+    private boolean textureStartupOverlayActive;
+    private boolean textureStartupOverlayFading;
+    private int textureStartupFramesUntilFade;
+    private int textureStartupBottom;
+    private int textureStartupLeft;
+    private int textureStartupRight;
+    private int textureStartupTop;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -227,6 +236,7 @@ public class WebRTCView extends ViewGroup {
             removeView(rendererView);
         }
         resetTextureResizeStabilization();
+        resetTextureStartupFade(true);
 
         createRenderer(nextRendererType);
         tryAddRendererToVideoTrack();
@@ -481,9 +491,10 @@ public class WebRTCView extends ViewGroup {
         int targetHeight = targetBottom - targetTop;
 
         if (targetWidth <= 0 || targetHeight <= 0) {
-            resetTextureResizeStabilization();
+            resetTextureResizeStabilization(!isTextureStartupOverlayOwned());
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(0f);
+            maybeShowTextureStartupBlackOverlay();
             return;
         }
 
@@ -491,14 +502,17 @@ public class WebRTCView extends ViewGroup {
         int currentWidth = rendererView.getWidth();
         int currentHeight = rendererView.getHeight();
         boolean hasCurrentLayout = currentWidth > 0 && currentHeight > 0;
-        boolean isShrinking = hasCurrentLayout && (targetWidth < currentWidth || targetHeight < currentHeight);
+        boolean isResizing = hasCurrentLayout && (targetWidth != currentWidth || targetHeight != currentHeight);
 
-        if (!isShrinking) {
-            resetTextureResizeStabilization();
+        if (!isResizing) {
+            resetTextureResizeStabilization(!isTextureStartupOverlayOwned());
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+            maybeShowTextureStartupBlackOverlay();
             return;
         }
+
+        resetTextureStartupFade(false);
 
         boolean targetChanged = !hasPendingTextureLayout
                 || pendingTextureLeft != targetLeft
@@ -535,6 +549,22 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void onTextureFrameRendered() {
+        if (!textureStartupFadePending
+                || !textureStartupOverlayActive
+                || textureStartupFramesUntilFade <= 0
+                || hasPendingTextureLayout) {
+            return;
+        }
+
+        textureStartupFramesUntilFade--;
+        if (textureStartupFramesUntilFade > 0) {
+            return;
+        }
+
+        textureStartupFadePending = false;
+        textureStartupOverlayActive = false;
+        textureStartupOverlayFading = true;
+        fadeOutTextureResizeBlackOverlay(() -> textureStartupOverlayFading = false);
     }
 
     private void onPendingTextureFrameRendered() {
@@ -604,6 +634,7 @@ public class WebRTCView extends ViewGroup {
      * resources (if rendering is in progress).
      */
     private void removeRendererFromVideoTrack() {
+        resetTextureStartupFade(true);
         removePendingTextureRenderer();
 
         if (rendererAttached) {
@@ -642,14 +673,79 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void resetTextureResizeStabilization() {
+        resetTextureResizeStabilization(true);
+    }
+
+    private void resetTextureResizeStabilization(boolean removeOverlay) {
         hasPendingTextureLayout = false;
         textureResizeFramesUntilCommit = 0;
         pendingTextureLeft = 0;
         pendingTextureTop = 0;
         pendingTextureRight = 0;
         pendingTextureBottom = 0;
-        removePendingTextureRenderer();
-        removeTextureResizeBlackOverlay();
+        removePendingTextureRenderer(removeOverlay);
+        if (removeOverlay) {
+            removeTextureResizeBlackOverlay();
+        }
+    }
+
+    private boolean isTextureStartupOverlayOwned() {
+        return textureStartupFadePending || textureStartupOverlayActive || textureStartupOverlayFading;
+    }
+
+    private void armTextureStartupFade() {
+        if (textureViewRenderer == null) return;
+
+        textureStartupFadePending = true;
+        textureStartupOverlayActive = false;
+        textureStartupOverlayFading = false;
+        textureStartupFramesUntilFade = TEXTURE_STARTUP_STABILIZATION_FRAMES;
+        textureStartupLeft = 0;
+        textureStartupTop = 0;
+        textureStartupRight = 0;
+        textureStartupBottom = 0;
+        maybeShowTextureStartupBlackOverlay();
+    }
+
+    private void maybeShowTextureStartupBlackOverlay() {
+        if (!textureStartupFadePending || textureViewRenderer == null || hasPendingTextureLayout) return;
+
+        int left = 0;
+        int top = 0;
+        int right = getWidth();
+        int bottom = getHeight();
+
+        if (right <= left || bottom <= top) return;
+
+        boolean targetChanged = !textureStartupOverlayActive
+                || textureStartupLeft != left
+                || textureStartupTop != top
+                || textureStartupRight != right
+                || textureStartupBottom != bottom;
+        if (targetChanged || textureStartupFramesUntilFade == 0) {
+            textureStartupFramesUntilFade = TEXTURE_STARTUP_STABILIZATION_FRAMES;
+        }
+
+        textureStartupOverlayActive = true;
+        textureStartupLeft = left;
+        textureStartupTop = top;
+        textureStartupRight = right;
+        textureStartupBottom = bottom;
+        showTextureResizeBlackOverlay(left, top, right, bottom);
+    }
+
+    private void resetTextureStartupFade(boolean removeOverlay) {
+        textureStartupFadePending = false;
+        textureStartupOverlayActive = false;
+        textureStartupOverlayFading = false;
+        textureStartupFramesUntilFade = 0;
+        textureStartupLeft = 0;
+        textureStartupTop = 0;
+        textureStartupRight = 0;
+        textureStartupBottom = 0;
+        if (removeOverlay) {
+            removeTextureResizeBlackOverlay();
+        }
     }
 
     private VideoTextureViewRenderer createTextureRenderer() {
@@ -689,7 +785,16 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void fadeOutTextureResizeBlackOverlay() {
-        if (textureResizeBlackOverlayView == null) return;
+        fadeOutTextureResizeBlackOverlay(null);
+    }
+
+    private void fadeOutTextureResizeBlackOverlay(Runnable onEnd) {
+        if (textureResizeBlackOverlayView == null) {
+            if (onEnd != null) {
+                onEnd.run();
+            }
+            return;
+        }
 
         final View overlay = textureResizeBlackOverlayView;
         overlay.bringToFront();
@@ -710,6 +815,9 @@ public class WebRTCView extends ViewGroup {
                         overlay.animate().setListener(null);
                         if (!canceled && textureResizeBlackOverlayView == overlay) {
                             removeTextureResizeBlackOverlay();
+                        }
+                        if (onEnd != null) {
+                            onEnd.run();
                         }
                     }
                 })
@@ -764,6 +872,10 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void removePendingTextureRenderer() {
+        removePendingTextureRenderer(true);
+    }
+
+    private void removePendingTextureRenderer(boolean removeOverlay) {
         if (pendingTextureViewRenderer == null) return;
 
         if (pendingTextureRendererAttached && videoTrack != null) {
@@ -786,7 +898,9 @@ public class WebRTCView extends ViewGroup {
         pendingTextureTop = 0;
         pendingTextureRight = 0;
         pendingTextureBottom = 0;
-        removeTextureResizeBlackOverlay();
+        if (removeOverlay) {
+            removeTextureResizeBlackOverlay();
+        }
     }
 
     /**
@@ -966,6 +1080,10 @@ public class WebRTCView extends ViewGroup {
                 Logging.e(
                         TAG, "Failed to initialize renderer on instance " + surfaceViewRendererInstances, e);
                 return;
+            }
+
+            if (textureViewRenderer != null) {
+                armTextureStartupFade();
             }
 
             final VideoSink sink = rendererSink;

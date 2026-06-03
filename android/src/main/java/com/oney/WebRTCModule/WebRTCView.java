@@ -50,7 +50,7 @@ public class WebRTCView extends ViewGroup {
      */
     private static final ScalingType DEFAULT_SCALING_TYPE = ScalingType.SCALE_ASPECT_FIT;
 
-    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 1;
+    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 3;
 
     private static final String TAG = WebRTCModule.TAG;
 
@@ -517,7 +517,7 @@ public class WebRTCView extends ViewGroup {
         int layoutTop = targetTop + (targetHeight - layoutHeight) / 2;
 
         rendererView.layout(layoutLeft, layoutTop, layoutLeft + layoutWidth, layoutTop + layoutHeight);
-        textureViewRenderer.setLayoutAspectRatio(layoutWidth / (float) layoutHeight);
+        textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
 
         if (!ensurePendingTextureRenderer()) {
             return;

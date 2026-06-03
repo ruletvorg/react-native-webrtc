@@ -2,6 +2,7 @@ package com.oney.WebRTCModule
 
 import android.content.Context
 import android.content.res.Resources
+import android.graphics.Bitmap
 import android.graphics.Point
 import android.graphics.SurfaceTexture
 import android.os.Handler
@@ -110,6 +111,16 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     fun setLayoutAspectRatio(aspectRatio: Float) {
         eglRenderer.setLayoutAspectRatio(aspectRatio)
+    }
+
+    fun copyCurrentFrameBitmap(): Bitmap? {
+        ThreadUtils.checkIsOnMainThread()
+        if (!isFirstFrameRendered || width <= 0 || height <= 0) return null
+        return try {
+            bitmap
+        } catch (_: RuntimeException) {
+            null
+        }
     }
 
     override fun onFrame(videoFrame: VideoFrame) {

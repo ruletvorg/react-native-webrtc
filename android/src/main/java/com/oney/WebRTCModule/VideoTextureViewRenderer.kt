@@ -84,6 +84,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         frameRotation = 0
         rendererEvents = null
         eglRenderer.release()
+        renderListenerAdded = false
     }
 
     fun clearImage() {

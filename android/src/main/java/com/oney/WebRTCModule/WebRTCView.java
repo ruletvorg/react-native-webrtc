@@ -163,6 +163,7 @@ public class WebRTCView extends ViewGroup {
     private int pendingTextureRight;
     private int pendingTextureTop;
     private int textureResizeFramesUntilCommit;
+    private boolean textureResizeHiddenUntilRender;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -498,10 +499,15 @@ public class WebRTCView extends ViewGroup {
         int layoutTop = targetTop + (targetHeight - layoutHeight) / 2;
 
         rendererView.layout(layoutLeft, layoutTop, layoutLeft + layoutWidth, layoutTop + layoutHeight);
-        textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
     }
 
     private void onTextureFrameRendered() {
+        if (textureResizeHiddenUntilRender && textureViewRenderer != null) {
+            textureResizeHiddenUntilRender = false;
+            textureViewRenderer.setAlpha(1f);
+            return;
+        }
+
         if (!hasPendingTextureLayout || textureResizeFramesUntilCommit <= 0 || rendererView == null || textureViewRenderer == null) {
             return;
         }
@@ -515,7 +521,10 @@ public class WebRTCView extends ViewGroup {
         int top = pendingTextureTop;
         int right = pendingTextureRight;
         int bottom = pendingTextureBottom;
-        resetTextureResizeStabilization();
+        hasPendingTextureLayout = false;
+        textureResizeFramesUntilCommit = 0;
+        textureResizeHiddenUntilRender = true;
+        textureViewRenderer.setAlpha(0f);
         rendererView.layout(left, top, right, bottom);
 
         int height = bottom - top;
@@ -559,6 +568,10 @@ public class WebRTCView extends ViewGroup {
     private void resetTextureResizeStabilization() {
         hasPendingTextureLayout = false;
         textureResizeFramesUntilCommit = 0;
+        textureResizeHiddenUntilRender = false;
+        if (textureViewRenderer != null) {
+            textureViewRenderer.setAlpha(1f);
+        }
         pendingTextureLeft = 0;
         pendingTextureTop = 0;
         pendingTextureRight = 0;

@@ -50,7 +50,7 @@ public class WebRTCView extends ViewGroup {
      */
     private static final ScalingType DEFAULT_SCALING_TYPE = ScalingType.SCALE_ASPECT_FIT;
 
-    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 3;
+    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 1;
 
     private static final String TAG = WebRTCModule.TAG;
 

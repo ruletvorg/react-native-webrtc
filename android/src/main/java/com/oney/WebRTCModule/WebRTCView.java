@@ -2,11 +2,13 @@ package com.oney.WebRTCModule;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageView;
 
 import androidx.core.view.ViewCompat;
 
@@ -163,7 +165,9 @@ public class WebRTCView extends ViewGroup {
     private int pendingTextureRight;
     private int pendingTextureTop;
     private int textureResizeFramesUntilCommit;
-    private boolean textureResizeHiddenUntilRender;
+    private Bitmap textureResizeSnapshotBitmap;
+    private ImageView textureResizeSnapshotView;
+    private boolean textureResizeSnapshotVisible;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -197,6 +201,9 @@ public class WebRTCView extends ViewGroup {
         }
 
         addView(rendererView);
+        if (textureViewRenderer != null) {
+            ensureTextureResizeSnapshotView();
+        }
         applyMirror();
         if (scalingType != null) {
             applyScalingType();
@@ -211,6 +218,7 @@ public class WebRTCView extends ViewGroup {
             removeView(rendererView);
         }
         resetTextureResizeStabilization();
+        removeTextureResizeSnapshotView();
 
         createRenderer(nextRendererType);
         tryAddRendererToVideoTrack();
@@ -502,9 +510,8 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void onTextureFrameRendered() {
-        if (textureResizeHiddenUntilRender && textureViewRenderer != null) {
-            textureResizeHiddenUntilRender = false;
-            textureViewRenderer.setAlpha(1f);
+        if (textureResizeSnapshotVisible) {
+            hideTextureResizeSnapshot();
             return;
         }
 
@@ -523,8 +530,7 @@ public class WebRTCView extends ViewGroup {
         int bottom = pendingTextureBottom;
         hasPendingTextureLayout = false;
         textureResizeFramesUntilCommit = 0;
-        textureResizeHiddenUntilRender = true;
-        textureViewRenderer.setAlpha(0f);
+        showTextureResizeSnapshot();
         rendererView.layout(left, top, right, bottom);
 
         int height = bottom - top;
@@ -568,14 +574,70 @@ public class WebRTCView extends ViewGroup {
     private void resetTextureResizeStabilization() {
         hasPendingTextureLayout = false;
         textureResizeFramesUntilCommit = 0;
-        textureResizeHiddenUntilRender = false;
-        if (textureViewRenderer != null) {
-            textureViewRenderer.setAlpha(1f);
-        }
+        hideTextureResizeSnapshot();
         pendingTextureLeft = 0;
         pendingTextureTop = 0;
         pendingTextureRight = 0;
         pendingTextureBottom = 0;
+    }
+
+    private void ensureTextureResizeSnapshotView() {
+        if (textureResizeSnapshotView != null) return;
+
+        textureResizeSnapshotView = new ImageView(getContext());
+        textureResizeSnapshotView.setScaleType(ImageView.ScaleType.FIT_XY);
+        textureResizeSnapshotView.setVisibility(View.GONE);
+        addView(textureResizeSnapshotView);
+    }
+
+    private void showTextureResizeSnapshot() {
+        if (textureViewRenderer == null || rendererView == null) return;
+
+        Bitmap snapshot;
+        try {
+            snapshot = textureViewRenderer.getBitmap();
+        } catch (Throwable tr) {
+            Log.w(TAG, "Failed to capture TextureView resize snapshot.", tr);
+            return;
+        }
+
+        if (snapshot == null) return;
+
+        hideTextureResizeSnapshot();
+        ensureTextureResizeSnapshotView();
+        textureResizeSnapshotBitmap = snapshot;
+        textureResizeSnapshotVisible = true;
+
+        textureResizeSnapshotView.setImageBitmap(snapshot);
+        textureResizeSnapshotView.setVisibility(View.VISIBLE);
+        textureResizeSnapshotView.layout(
+                rendererView.getLeft(),
+                rendererView.getTop(),
+                rendererView.getRight(),
+                rendererView.getBottom());
+        textureResizeSnapshotView.bringToFront();
+    }
+
+    private void hideTextureResizeSnapshot() {
+        textureResizeSnapshotVisible = false;
+
+        if (textureResizeSnapshotView != null) {
+            textureResizeSnapshotView.setVisibility(View.GONE);
+            textureResizeSnapshotView.setImageBitmap(null);
+        }
+
+        if (textureResizeSnapshotBitmap != null) {
+            textureResizeSnapshotBitmap.recycle();
+            textureResizeSnapshotBitmap = null;
+        }
+    }
+
+    private void removeTextureResizeSnapshotView() {
+        hideTextureResizeSnapshot();
+        if (textureResizeSnapshotView != null) {
+            removeView(textureResizeSnapshotView);
+            textureResizeSnapshotView = null;
+        }
     }
 
     /**

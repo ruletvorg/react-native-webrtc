@@ -40,9 +40,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private val eglRenderer: EglRenderer = EglRenderer(resourceName)
     private val uiThreadHandler = Handler(Looper.getMainLooper())
     private val renderListener = EglRenderer.RenderListener {
-        uiThreadHandler.post {
-            frameRenderedListener?.run()
-        }
+        notifyFrameRendered()
     }
 
     private var rendererEvents: RendererEvents? = null
@@ -161,7 +159,9 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) = Unit
 
-    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
+    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
+        notifyFrameRendered()
+    }
 
     override fun onDetachedFromWindow() {
         surfaceGeneration++
@@ -205,6 +205,14 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             Log.w(TAG, "Failed to release EGL surface.", t)
         } finally {
             hasEglSurface = false
+        }
+    }
+
+    private fun notifyFrameRendered() {
+        uiThreadHandler.post {
+            if (!released) {
+                frameRenderedListener?.run()
+            }
         }
     }
 

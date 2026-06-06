@@ -55,6 +55,7 @@ public class WebRTCView extends ViewGroup {
     private static final int TEXTURE_STARTUP_STABILIZATION_FRAMES = 2;
     private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 3;
     private static final long TEXTURE_RESIZE_BLACK_FADE_OUT_MS = 160;
+    private static final long TEXTURE_BLACK_OVERLAY_HARD_TIMEOUT_MS = 1000;
 
     private static final String TAG = WebRTCModule.TAG;
 
@@ -189,6 +190,7 @@ public class WebRTCView extends ViewGroup {
     private int textureStartupLeft;
     private int textureStartupRight;
     private int textureStartupTop;
+    private int textureBlackOverlayGeneration;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -767,6 +769,7 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void showTextureResizeBlackOverlay(int left, int top, int right, int bottom) {
+        boolean createdOverlay = textureResizeBlackOverlayView == null;
         if (textureResizeBlackOverlayView == null) {
             textureResizeBlackOverlayView = new View(getContext());
             textureResizeBlackOverlayView.setBackgroundColor(Color.BLACK);
@@ -782,6 +785,41 @@ public class WebRTCView extends ViewGroup {
 
         textureResizeBlackOverlayView.layout(left, top, right, bottom);
         textureResizeBlackOverlayView.bringToFront();
+        if (createdOverlay) {
+            scheduleTextureBlackOverlayHardTimeout();
+        }
+    }
+
+    private void scheduleTextureBlackOverlayHardTimeout() {
+        final int generation = ++textureBlackOverlayGeneration;
+
+        // Some TextureView devices do not report enough rendered frames, so the overlay needs a hard stop.
+        postDelayed(() -> {
+            if (generation != textureBlackOverlayGeneration || textureResizeBlackOverlayView == null) {
+                return;
+            }
+
+            if (hasPendingTextureLayout) {
+                int left = pendingTextureLeft;
+                int top = pendingTextureTop;
+                int right = pendingTextureRight;
+                int bottom = pendingTextureBottom;
+
+                resetTextureResizeStabilization(false);
+                layoutTextureRendererAfterAbortedResize(left, top, right, bottom);
+            }
+
+            resetTextureStartupFade(false);
+            fadeOutTextureResizeBlackOverlay();
+        }, TEXTURE_BLACK_OVERLAY_HARD_TIMEOUT_MS);
+    }
+
+    private void layoutTextureRendererAfterAbortedResize(int left, int top, int right, int bottom) {
+        if (textureViewRenderer == null || rendererView == null) return;
+        if (right <= left || bottom <= top) return;
+
+        rendererView.layout(left, top, right, bottom);
+        textureViewRenderer.setLayoutAspectRatio((right - left) / (float) (bottom - top));
     }
 
     private void fadeOutTextureResizeBlackOverlay() {
@@ -827,6 +865,7 @@ public class WebRTCView extends ViewGroup {
     private void removeTextureResizeBlackOverlay() {
         if (textureResizeBlackOverlayView == null) return;
 
+        textureBlackOverlayGeneration++;
         textureResizeBlackOverlayView.animate().cancel();
         textureResizeBlackOverlayView.animate().setListener(null);
         removeView(textureResizeBlackOverlayView);

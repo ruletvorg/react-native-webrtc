@@ -28,6 +28,7 @@ import com.oney.WebRTCModule.videoEffects.VideoFrameProcessor;
 import org.webrtc.*;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +47,7 @@ class GetUserMediaImpl {
     private static final String TAG = WebRTCModule.TAG;
 
     private static final int PERMISSION_REQUEST_CODE = (int) (Math.random() * Short.MAX_VALUE);
+    private static final List<String> INITIAL_CAMERA_VIDEO_EFFECTS = Arrays.asList("flip");
 
     private CameraEnumerator cameraEnumerator;
     private final ReactApplicationContext reactContext;
@@ -267,10 +269,10 @@ class GetUserMediaImpl {
         TrackPrivate track = tracks.get(trackId);
         if (track != null && track.videoCaptureController != null) {
             if (enabled) {
-                track.videoCaptureController.startCapture();
+                track.videoCaptureController.startCaptureAsync();
             } else {
                 if (!track.isClone()) {
-                    track.videoCaptureController.stopCapture();
+                    track.videoCaptureController.stopCaptureAsync();
                 }
             }
         }
@@ -440,6 +442,7 @@ class GetUserMediaImpl {
 
         VideoSource videoSource = pcFactory.createVideoSource(videoCapturer.isScreencast());
         videoCapturer.initialize(surfaceTextureHelper, reactContext, videoSource.getCapturerObserver());
+        applyVideoEffects(videoSource, surfaceTextureHelper, INITIAL_CAMERA_VIDEO_EFFECTS);
 
         VideoTrack track = pcFactory.createVideoTrack(id, videoSource);
 
@@ -450,7 +453,7 @@ class GetUserMediaImpl {
         track.setEnabled(true);
         tracks.put(id, new TrackPrivate(track, videoSource, videoCaptureController, surfaceTextureHelper, localTrackAdapter));
 
-        videoCaptureController.startCapture();
+        videoCaptureController.startCaptureAsync();
 
         return track;
     }
@@ -505,11 +508,25 @@ class GetUserMediaImpl {
             VideoSource videoSource = (VideoSource) track.mediaSource;
             SurfaceTextureHelper surfaceTextureHelper = track.surfaceTextureHelper;
 
-            if (names != null) {
-                List<VideoFrameProcessor> processors = names.toArrayList().stream()
-                    .filter(name -> name instanceof String)
+            List<String> effectNames = names == null
+                    ? null
+                    : names.toArrayList().stream()
+                        .filter(name -> name instanceof String)
+                        .map(name -> (String) name)
+                        .collect(Collectors.toList());
+
+            applyVideoEffects(videoSource, surfaceTextureHelper, effectNames);
+        }
+    }
+
+    private void applyVideoEffects(
+            VideoSource videoSource,
+            SurfaceTextureHelper surfaceTextureHelper,
+            List<String> names) {
+        if (names != null && names.size() > 0) {
+            List<VideoFrameProcessor> processors = names.stream()
                     .map(name -> {
-                        VideoFrameProcessor videoFrameProcessor = ProcessorProvider.getProcessor((String) name);
+                        VideoFrameProcessor videoFrameProcessor = ProcessorProvider.getProcessor(name);
                         if (videoFrameProcessor == null) {
                             Log.e(TAG, "no videoFrameProcessor associated with this name: " + name);
                         }
@@ -518,13 +535,16 @@ class GetUserMediaImpl {
                     .filter(Objects::nonNull)
                     .collect(Collectors.toList());
 
+            if (processors.size() > 0) {
                 VideoEffectProcessor videoEffectProcessor =
                         new VideoEffectProcessor(processors, surfaceTextureHelper);
                 videoSource.setVideoProcessor(videoEffectProcessor);
-
             } else {
                 videoSource.setVideoProcessor(null);
             }
+
+        } else {
+            videoSource.setVideoProcessor(null);
         }
     }
 
@@ -596,37 +616,47 @@ class GetUserMediaImpl {
 
         public void dispose() {
             final boolean isClone = this.isClone();
-            if (!disposed) {
-                if (!isClone && videoCaptureController != null) {
+            if (disposed) {
+                return;
+            }
+
+            disposed = true;
+
+            // Clean up VideoTrackAdapter for video tracks.
+            if (videoTrackAdapter != null && track instanceof VideoTrack) {
+                videoTrackAdapter.removeDimensionDetector((VideoTrack) track);
+            }
+
+            if (!isClone && videoCaptureController != null) {
+                ThreadUtils.runOnCaptureExecutor(() -> {
                     if (videoCaptureController.stopCapture()) {
                         videoCaptureController.dispose();
                     }
-                }
 
-                // Clean up VideoTrackAdapter for video tracks
-                if (!isClone && videoTrackAdapter != null && track instanceof VideoTrack) {
-                    videoTrackAdapter.removeDimensionDetector((VideoTrack) track);
-                }
+                    /*
+                     * As per webrtc library documentation - The caller still has ownership of {@code
+                     * surfaceTextureHelper} and is responsible for making sure surfaceTextureHelper.dispose() is
+                     * called. This also means that the caller can reuse the SurfaceTextureHelper to initialize a new
+                     * VideoCapturer once the previous VideoCapturer has been disposed. */
+                    if (surfaceTextureHelper != null) {
+                        surfaceTextureHelper.stopListening();
+                        surfaceTextureHelper.dispose();
+                    }
 
-                /*
-                 * As per webrtc library documentation - The caller still has ownership of {@code
-                 * surfaceTextureHelper} and is responsible for making sure surfaceTextureHelper.dispose() is
-                 * called. This also means that the caller can reuse the SurfaceTextureHelper to initialize a new
-                 * VideoCapturer once the previous VideoCapturer has been disposed. */
-
-                if (!isClone && surfaceTextureHelper != null) {
-                    surfaceTextureHelper.stopListening();
-                    surfaceTextureHelper.dispose();
-                }
-
-                // clones should not dispose the mediaSource as that will affect the original track
-                // and other clones as well (since they share the same mediaSource).
-                if (!isClone) {
-                    mediaSource.dispose();
-                }
-                track.dispose();
-                disposed = true;
+                    ThreadUtils.runOnExecutor(() -> {
+                        mediaSource.dispose();
+                        track.dispose();
+                    });
+                });
+                return;
             }
+
+            // clones should not dispose the mediaSource as that will affect the original track
+            // and other clones as well (since they share the same mediaSource).
+            if (!isClone) {
+                mediaSource.dispose();
+            }
+            track.dispose();
         }
 
         public void setParent(TrackPrivate parent) {

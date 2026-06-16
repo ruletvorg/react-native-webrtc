@@ -54,6 +54,24 @@ public class CameraCaptureController extends AbstractVideoCaptureController {
             updateActualSize(cameraIndex, cameraName, videoCapturer);
             CameraCaptureController.this.currentDeviceId = cameraIndex == -1 ? null : String.valueOf(cameraIndex);
         }
+
+        @Override
+        public void onCameraDisconnected() {
+            super.onCameraDisconnected();
+            notifyCapturerEnded();
+        }
+
+        @Override
+        public void onCameraError(String errorDescription) {
+            super.onCameraError(errorDescription);
+            notifyCapturerEnded();
+        }
+
+        @Override
+        public void onCameraFreezed(String errorDescription) {
+            super.onCameraFreezed(errorDescription);
+            notifyCapturerEnded();
+        }
     };
 
     public CameraCaptureController(Context context, CameraEnumerator cameraEnumerator, ReadableMap constraints) {

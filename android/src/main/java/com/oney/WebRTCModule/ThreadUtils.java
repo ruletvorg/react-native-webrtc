@@ -12,6 +12,7 @@ final class ThreadUtils {
      * to this thread to avoid (potentially) blocking the calling thread.
      */
     private static final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private static final ExecutorService captureExecutor = Executors.newSingleThreadExecutor();
 
     /**
      * Runs the given {@link Runnable} on the executor.
@@ -19,6 +20,15 @@ final class ThreadUtils {
      */
     public static void runOnExecutor(Runnable runnable) {
         executor.execute(runnable);
+    }
+
+    /**
+     * Runs slow camera capture operations away from the main WebRTC executor.
+     * Camera2 stop/close may block for hundreds of milliseconds, and the UI
+     * thread can synchronously query WebRTC state while views are changing.
+     */
+    public static void runOnCaptureExecutor(Runnable runnable) {
+        captureExecutor.execute(runnable);
     }
 
     /**

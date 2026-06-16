@@ -24,6 +24,7 @@ public abstract class AbstractVideoCaptureController {
     protected VideoCapturer videoCapturer;
 
     protected CapturerEventsListener capturerEventsListener;
+    private boolean captureStarted;
 
     public AbstractVideoCaptureController(int width, int height, int fps) {
         this.targetWidth = width;
@@ -41,11 +42,12 @@ public abstract class AbstractVideoCaptureController {
     @Nullable
     public abstract String getDeviceId();
 
-    public void dispose() {
+    public synchronized void dispose() {
         if (videoCapturer != null) {
             videoCapturer.dispose();
             videoCapturer = null;
         }
+        captureStarted = false;
     }
 
     public int getHeight() {
@@ -74,9 +76,12 @@ public abstract class AbstractVideoCaptureController {
         return videoCapturer;
     }
 
-    public void startCapture() {
+    public synchronized void startCapture() {
         try {
-            videoCapturer.startCapture(targetWidth, targetHeight, targetFps);
+            if (videoCapturer != null && !captureStarted) {
+                videoCapturer.startCapture(targetWidth, targetHeight, targetFps);
+                captureStarted = true;
+            }
         } catch (RuntimeException e) {
             // XXX This can only fail if we initialize the capturer incorrectly,
             // which we don't. Thus, ignore any failures here since we trust
@@ -84,15 +89,35 @@ public abstract class AbstractVideoCaptureController {
         }
     }
 
-    public boolean stopCapture() {
+    public synchronized boolean stopCapture() {
         try {
-            if (videoCapturer != null) {
+            if (videoCapturer != null && captureStarted) {
+                captureStarted = false;
                 videoCapturer.stopCapture();
             }
             return true;
         } catch (InterruptedException e) {
             return false;
         }
+    }
+
+    protected synchronized void markCaptureStopped() {
+        captureStarted = false;
+    }
+
+    protected void notifyCapturerEnded() {
+        markCaptureStopped();
+        if (capturerEventsListener != null) {
+            capturerEventsListener.onCapturerEnded();
+        }
+    }
+
+    public void startCaptureAsync() {
+        ThreadUtils.runOnCaptureExecutor(this::startCapture);
+    }
+
+    public void stopCaptureAsync() {
+        ThreadUtils.runOnCaptureExecutor(this::stopCapture);
     }
 
     public void applyConstraints(ReadableMap constraints, @Nullable Consumer<Exception> onFinishedCallback) {

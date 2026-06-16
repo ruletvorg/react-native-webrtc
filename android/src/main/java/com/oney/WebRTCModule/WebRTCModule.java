@@ -35,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 
 @ReactModule(name = "WebRTCModule")
@@ -56,7 +57,7 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
         super(reactContext);
 
         mPeerConnectionObservers = new SparseArray<>();
-        localStreams = new HashMap<>();
+        localStreams = new ConcurrentHashMap<>();
 
         WebRTCModuleOptions options = WebRTCModuleOptions.getInstance();
 
@@ -428,18 +429,17 @@ public class WebRTCModule extends ReactContextBaseJavaModule {
         // This function _only_ gets called from WebRTCView, in the UI thread.
         // Hence make sure we run this code in the executor or we run at the risk
         // of being out of sync.
+        MediaStream localStream = localStreams.get(streamReactTag);
+        if (localStream != null) {
+            return localStream;
+        }
+
         try {
             return (MediaStream) ThreadUtils
                     .submitToExecutor((Callable<Object>) () -> {
-                        MediaStream stream = localStreams.get(streamReactTag);
-
-                        if (stream != null) {
-                            return stream;
-                        }
-
                         for (int i = 0, size = mPeerConnectionObservers.size(); i < size; i++) {
                             PeerConnectionObserver pco = mPeerConnectionObservers.valueAt(i);
-                            stream = pco.remoteStreams.get(streamReactTag);
+                            MediaStream stream = pco.remoteStreams.get(streamReactTag);
                             if (stream != null) {
                                 return stream;
                             }

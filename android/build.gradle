@@ -18,8 +18,13 @@ buildscript {
 apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
+def patchedWebrtcAarDir = "$projectDir/libs"
+
 rootProject.allprojects {
     repositories {
+        flatDir {
+            dirs patchedWebrtcAarDir
+        }
         maven {
             name = 'Central Portal Snapshots'
             url = 'https://central.sonatype.com/repository/maven-snapshots/'
@@ -32,6 +37,9 @@ rootProject.allprojects {
 }
 
 repositories {
+    flatDir {
+        dirs "$projectDir/libs"
+    }
     mavenCentral()
     google()
 }
@@ -84,7 +92,7 @@ def kotlin_version = getExtOrDefault('kotlinVersion', '1.8.10')
 println "Building Stream WebRTC React Native module with Kotlin version: $kotlin_version"
 
 dependencies {
-    api 'io.getstream:stream-video-webrtc-android:137.0.1'
+    api(name: 'stream-video-webrtc-android-137.0.1-camble', ext: 'aar')
     implementation "com.facebook.react:react-android:+"
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
     implementation "androidx.core:core:1.7.0"

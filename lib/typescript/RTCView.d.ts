@@ -30,6 +30,13 @@ interface RTCVideoViewProps extends ViewProps {
      */
     streamURL?: string;
     /**
+     * Fired after the first real video frame has been rendered by the native
+     * WebRTC renderer.
+     *
+     * onFirstFrameRendered: () => void
+     */
+    onFirstFrameRendered?: () => void;
+    /**
      * Similarly to the CSS property z-index, specifies the z-order of this
      * RTCView in the stacking space of all RTCViews. When RTCViews overlap,
      * zOrder determines which one covers the other. An RTCView with a larger

@@ -13,6 +13,7 @@ import android.view.ViewGroup;
 import androidx.core.view.ViewCompat;
 
 import com.facebook.react.bridge.ReactContext;
+import com.facebook.react.uimanager.events.RCTEventEmitter;
 
 import org.webrtc.EglBase;
 import org.webrtc.Logging;
@@ -56,6 +57,7 @@ public class WebRTCView extends ViewGroup {
     private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 3;
     private static final long TEXTURE_RESIZE_BLACK_FADE_OUT_MS = 160;
     private static final long TEXTURE_BLACK_OVERLAY_HARD_TIMEOUT_MS = 1000;
+    private static final String FIRST_FRAME_RENDERED_EVENT = "topFirstFrameRendered";
 
     private static final String TAG = WebRTCModule.TAG;
 
@@ -196,6 +198,7 @@ public class WebRTCView extends ViewGroup {
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
      */
     private VideoTrack videoTrack;
+    private boolean firstFrameRendered;
 
     public WebRTCView(Context context) {
         super(context);
@@ -386,7 +389,36 @@ public class WebRTCView extends ViewGroup {
         post(() -> {
             Log.d(TAG, "First frame rendered.");
             setSurfaceRendererBackgroundColor(Color.TRANSPARENT);
+            if (textureViewRenderer == null || (!textureStartupOverlayActive && !textureStartupOverlayFading)) {
+                emitFirstFrameRenderedIfNeeded();
+            }
         });
+    }
+
+    private void resetFirstFrameRendered() {
+        synchronized (this) {
+            firstFrameRendered = false;
+        }
+    }
+
+    private void emitFirstFrameRenderedIfNeeded() {
+        boolean shouldEmit = false;
+
+        synchronized (this) {
+            if (!firstFrameRendered) {
+                firstFrameRendered = true;
+                shouldEmit = true;
+            }
+        }
+
+        if (!shouldEmit) {
+            return;
+        }
+
+        ReactContext reactContext = (ReactContext) getContext();
+        reactContext
+                .getJSModule(RCTEventEmitter.class)
+                .receiveEvent(getId(), FIRST_FRAME_RENDERED_EVENT, null);
     }
 
     /**
@@ -566,7 +598,10 @@ public class WebRTCView extends ViewGroup {
         textureStartupFadePending = false;
         textureStartupOverlayActive = false;
         textureStartupOverlayFading = true;
-        fadeOutTextureResizeBlackOverlay(() -> textureStartupOverlayFading = false);
+        fadeOutTextureResizeBlackOverlay(() -> {
+            textureStartupOverlayFading = false;
+            emitFirstFrameRenderedIfNeeded();
+        });
     }
 
     private void onPendingTextureFrameRendered() {
@@ -1063,6 +1098,8 @@ public class WebRTCView extends ViewGroup {
         VideoTrack oldVideoTrack = this.videoTrack;
 
         if (oldVideoTrack != videoTrack) {
+            resetFirstFrameRendered();
+
             if (oldVideoTrack != null) {
                 if (videoTrack == null) {
                     // If we are not going to render any stream, clean the

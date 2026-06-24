@@ -1,8 +1,11 @@
 package com.oney.WebRTCModule;
 
+import com.facebook.react.common.MapBuilder;
 import com.facebook.react.uimanager.SimpleViewManager;
 import com.facebook.react.uimanager.ThemedReactContext;
 import com.facebook.react.uimanager.annotations.ReactProp;
+
+import java.util.Map;
 
 public class RTCVideoViewManager extends SimpleViewManager<WebRTCView> {
     private static final String REACT_CLASS = "RTCVideoView";
@@ -15,6 +18,13 @@ public class RTCVideoViewManager extends SimpleViewManager<WebRTCView> {
     @Override
     public WebRTCView createViewInstance(ThemedReactContext context) {
         return new WebRTCView(context);
+    }
+
+    @Override
+    public Map<String, Object> getExportedCustomDirectEventTypeConstants() {
+        return MapBuilder.of(
+                "topFirstFrameRendered",
+                MapBuilder.of("registrationName", "onFirstFrameRendered"));
     }
 
     /**

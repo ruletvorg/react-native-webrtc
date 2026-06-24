@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 
 #import <React/RCTLog.h>
+#import <React/RCTComponent.h>
 #import <React/RCTView.h>
 
 #import <WebRTC/RTCMediaStream.h>
@@ -12,6 +13,7 @@
 #endif
 #import <WebRTC/RTCCVPixelBuffer.h>
 #import <WebRTC/RTCVideoFrame.h>
+#import <WebRTC/RTCVideoRenderer.h>
 #import <WebRTC/RTCVideoTrack.h>
 
 #import "RTCVideoViewManager.h"
@@ -44,7 +46,7 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
  * Implements an equivalent of {@code HTMLVideoElement} i.e. Web's video
  * element.
  */
-@interface RTCVideoView : RCTView
+@interface RTCVideoView : RCTView <RTCVideoRenderer>
 
 /**
  * The indicator which determines whether this {@code RTCVideoView} is to mirror
@@ -74,6 +76,8 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
  * The {@link RTCVideoTrack}, if any, which this instance renders.
  */
 @property(nonatomic, strong) RTCVideoTrack *videoTrack;
+@property(nonatomic) BOOL hasFirstFrameRendered;
+@property(nonatomic, copy) RCTDirectEventBlock onFirstFrameRendered;
 
 /**
  * Reference to the main WebRTC RN module.
@@ -101,11 +105,11 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
     if (videoTrack) {
         if (self.window) {
             dispatch_async(_module.workerQueue, ^{
-                [videoTrack addRenderer:self.videoView];
+                [videoTrack addRenderer:self];
             });
         } else {
             dispatch_async(_module.workerQueue, ^{
-                [videoTrack removeRenderer:self.videoView];
+                [videoTrack removeRenderer:self];
             });
         }
     }
@@ -143,6 +147,39 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
 
   CGRect bounds = self.bounds;
   self.videoView.frame = bounds;
+}
+
+- (void)emitFirstFrameRenderedIfNeeded {
+    BOOL shouldEmit = NO;
+
+    @synchronized(self) {
+        if (!self.hasFirstFrameRendered) {
+            self.hasFirstFrameRendered = YES;
+            shouldEmit = YES;
+        }
+    }
+
+    if (!shouldEmit) {
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.onFirstFrameRendered) {
+            self.onFirstFrameRendered(@{});
+        }
+    });
+}
+
+- (void)renderFrame:(nullable RTCVideoFrame *)frame {
+    if (frame) {
+        [self emitFirstFrameRenderedIfNeeded];
+    }
+
+    [self.videoView renderFrame:frame];
+}
+
+- (void)setSize:(CGSize)size {
+    [self.videoView setSize:size];
 }
 
 /**
@@ -192,9 +229,11 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
     RTCVideoTrack *oldValue = self.videoTrack;
 
     if (oldValue != videoTrack) {
+        self.hasFirstFrameRendered = NO;
+
         if (oldValue) {
             dispatch_async(_module.workerQueue, ^{
-                [oldValue removeRenderer:self.videoView];
+                [oldValue removeRenderer:self];
             });
         }
 
@@ -237,7 +276,7 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
         // See "didMoveToWindow" above.
         if (videoTrack && self.window) {
             dispatch_async(_module.workerQueue, ^{
-                [videoTrack addRenderer:self.videoView];
+                [videoTrack addRenderer:self];
             });
         }
     }
@@ -263,6 +302,7 @@ RCT_EXPORT_MODULE()
 #pragma mark - View properties
 
 RCT_EXPORT_VIEW_PROPERTY(mirror, BOOL)
+RCT_EXPORT_VIEW_PROPERTY(onFirstFrameRendered, RCTDirectEventBlock)
 
 /**
  * In the fashion of

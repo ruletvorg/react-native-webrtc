@@ -186,9 +186,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) = Unit
 
-    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
-        notifyFrameRendered()
-    }
+    override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
 
     override fun onDetachedFromWindow() {
         surfaceGeneration++

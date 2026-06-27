@@ -188,6 +188,7 @@ public class WebRTCView extends ViewGroup {
     private boolean textureStartupFadePending;
     private boolean textureStartupOverlayActive;
     private boolean textureStartupOverlayFading;
+    private boolean textureFirstFrameWaitingForStartup;
     private int textureStartupFramesUntilFade;
     private int textureStartupBottom;
     private int textureStartupLeft;
@@ -390,8 +391,11 @@ public class WebRTCView extends ViewGroup {
         post(() -> {
             Log.d(TAG, "First frame rendered.");
             setSurfaceRendererBackgroundColor(Color.TRANSPARENT);
-            if (textureViewRenderer == null || (!textureStartupOverlayActive && !textureStartupOverlayFading)) {
+            if (noanimation || textureViewRenderer == null || (!textureStartupOverlayActive && !textureStartupOverlayFading)) {
+                textureFirstFrameWaitingForStartup = false;
                 emitFirstFrameRenderedIfNeeded();
+            } else {
+                textureFirstFrameWaitingForStartup = true;
             }
         });
     }
@@ -601,6 +605,7 @@ public class WebRTCView extends ViewGroup {
         textureStartupOverlayFading = true;
         fadeOutTextureResizeBlackOverlay(() -> {
             textureStartupOverlayFading = false;
+            textureFirstFrameWaitingForStartup = false;
             emitFirstFrameRenderedIfNeeded();
         });
     }
@@ -733,10 +738,15 @@ public class WebRTCView extends ViewGroup {
 
     private void armTextureStartupFade() {
         if (textureViewRenderer == null) return;
+        if (noanimation) {
+            resetTextureStartupFade(true);
+            return;
+        }
 
         textureStartupFadePending = true;
         textureStartupOverlayActive = false;
         textureStartupOverlayFading = false;
+        textureFirstFrameWaitingForStartup = false;
         textureStartupFramesUntilFade = TEXTURE_STARTUP_STABILIZATION_FRAMES;
         textureStartupLeft = 0;
         textureStartupTop = 0;
@@ -775,6 +785,7 @@ public class WebRTCView extends ViewGroup {
         textureStartupFadePending = false;
         textureStartupOverlayActive = false;
         textureStartupOverlayFading = false;
+        textureFirstFrameWaitingForStartup = false;
         textureStartupFramesUntilFade = 0;
         textureStartupLeft = 0;
         textureStartupTop = 0;
@@ -1068,7 +1079,11 @@ public class WebRTCView extends ViewGroup {
     public void setNoanimation(boolean noanimation) {
         this.noanimation = noanimation;
         if (noanimation) {
-            removeTextureResizeBlackOverlay();
+            boolean shouldEmitFirstFrame = textureFirstFrameWaitingForStartup;
+            resetTextureStartupFade(true);
+            if (shouldEmitFirstFrame) {
+                emitFirstFrameRenderedIfNeeded();
+            }
         }
     }
 

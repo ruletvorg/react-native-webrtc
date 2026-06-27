@@ -573,9 +573,7 @@ public class WebRTCView extends ViewGroup {
         int currentHeight = textureViewRenderer.getHeight();
         boolean hasCurrentLayout = currentWidth > 0 && currentHeight > 0;
         boolean isInitialLayout = !hasCurrentLayout;
-        boolean isGrowing = hasCurrentLayout && (targetWidth > currentWidth || targetHeight > currentHeight);
-        boolean aspectChanged = hasCurrentLayout
-                && Math.abs((currentWidth / (float) currentHeight) - targetAspectRatio) > 0.01f;
+        boolean sizeChanged = hasCurrentLayout && (targetWidth != currentWidth || targetHeight != currentHeight);
 
         if (isInitialLayout) {
             cancelTextureResizeSwap();
@@ -586,12 +584,16 @@ public class WebRTCView extends ViewGroup {
             return;
         }
 
-        if (!isGrowing && !aspectChanged) {
+        if (!sizeChanged) {
             clearPendingTextureResizeLayout();
             layoutTextureRendererChildCentered(targetWidth, targetHeight, currentWidth, currentHeight);
             markTextureStartupLayoutReady();
             return;
         }
+
+        clearPendingTextureResizeLayout();
+        layoutTextureRendererChildCentered(targetWidth, targetHeight, currentWidth, currentHeight);
+        markTextureStartupLayoutReady();
 
         resetTextureStartupFade(false);
         if (startTextureResizeSwap(targetLeft, targetTop, targetRight, targetBottom, targetWidth, targetHeight, targetAspectRatio)) {
@@ -771,7 +773,7 @@ public class WebRTCView extends ViewGroup {
         textureResizeSwapBottom = bottom;
         textureResizeSwapCovered = snapshotShown;
         textureResizeSwapFramesUntilReady = TEXTURE_RESIZE_SWAP_STABILIZATION_FRAMES;
-        textureResizeSwapHidPrevious = true;
+        textureResizeSwapHidPrevious = snapshotShown;
 
         addTextureRendererView(nextRenderer);
         nextRenderer.layoutWithReadyBuffer(0, 0, width, height, aspectRatio);
@@ -779,7 +781,11 @@ public class WebRTCView extends ViewGroup {
         nextRenderer.bringToFront();
         textureViewRenderer.animate().cancel();
         textureViewRenderer.animate().setListener(null);
-        textureViewRenderer.setAlpha(0f);
+        if (snapshotShown) {
+            textureViewRenderer.setAlpha(0f);
+        } else {
+            textureViewRenderer.setAlpha(1f);
+        }
         if (snapshotShown) {
             layoutResizeSnapshotOverlay(left, top, right, bottom);
         }

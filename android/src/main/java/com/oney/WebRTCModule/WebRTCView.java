@@ -176,7 +176,7 @@ public class WebRTCView extends ViewGroup {
     private View rendererView;
     private VideoSink rendererSink;
     private SurfaceViewRenderer surfaceViewRenderer;
-    private FrameLayout textureRendererContainer;
+    private TextureRendererContainer textureRendererContainer;
     private VideoTextureViewRenderer textureViewRenderer;
     private VideoTextureViewRenderer textureResizeSwapRenderer;
     private VideoTrack textureResizeSwapTrack;
@@ -236,9 +236,7 @@ public class WebRTCView extends ViewGroup {
         textureViewRenderer = null;
 
         if (rendererType == RendererType.TEXTURE) {
-            textureRendererContainer = new FrameLayout(getContext());
-            textureRendererContainer.setClipChildren(true);
-            textureRendererContainer.setClipToPadding(true);
+            textureRendererContainer = new TextureRendererContainer(getContext());
             textureViewRenderer = createTextureRenderer();
             textureViewRenderer.setTextureUpdatedListener(() -> WebRTCView.this.onTextureUpdated());
             textureRendererContainer.addView(textureViewRenderer);
@@ -1654,6 +1652,21 @@ public class WebRTCView extends ViewGroup {
             addSinkToVideoTrack(track, sink);
 
             rendererAttached = true;
+        }
+    }
+
+    private static final class TextureRendererContainer extends FrameLayout {
+        TextureRendererContainer(Context context) {
+            super(context);
+            setClipChildren(true);
+            setClipToPadding(true);
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            // WebRTCView owns the TextureView geometry. FrameLayout's default
+            // MATCH_PARENT child layout briefly resizes TextureView before the
+            // guarded renderer swap path can keep the old buffer stable.
         }
     }
 }

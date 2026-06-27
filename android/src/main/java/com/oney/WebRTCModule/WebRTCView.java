@@ -383,6 +383,9 @@ public class WebRTCView extends ViewGroup {
             setSurfaceRendererBackgroundColor(Color.TRANSPARENT);
             if (noanimation || textureViewRenderer == null || !isTextureStartupOverlayOwned()) {
                 textureFirstFrameWaitingForStartup = false;
+                if (noanimation) {
+                    removeLastFrameOverlay();
+                }
                 emitFirstFrameRenderedIfNeeded();
             } else {
                 textureFirstFrameWaitingForStartup = true;
@@ -633,7 +636,7 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void maybeShowLastFrameOverlay() {
-        if (!preserveLastFrame || noanimation || streamURL == null || lastFrameOverlayView != null) return;
+        if (!preserveLastFrame || streamURL == null || lastFrameOverlayView != null) return;
 
         Bitmap bitmap;
         synchronized (lastFrameCache) {
@@ -886,7 +889,7 @@ public class WebRTCView extends ViewGroup {
             textureViewRenderer.animate().setListener(null);
             textureViewRenderer.setAlpha(1f);
         }
-        if (noanimation) {
+        if (removeOverlay && !preserveLastFrame) {
             removeLastFrameOverlay();
         }
     }
@@ -985,7 +988,9 @@ public class WebRTCView extends ViewGroup {
             boolean shouldEmitFirstFrame = textureFirstFrameWaitingForStartup;
             resetTextureResizeFade();
             resetTextureStartupFade(true);
-            removeLastFrameOverlay();
+            if (!preserveLastFrame) {
+                removeLastFrameOverlay();
+            }
             if (shouldEmitFirstFrame) {
                 emitFirstFrameRenderedIfNeeded();
             }
@@ -1054,7 +1059,7 @@ public class WebRTCView extends ViewGroup {
             resetFirstFrameRendered();
 
             if (oldVideoTrack != null) {
-                if (videoTrack == null) {
+                if (videoTrack == null && !preserveLastFrame) {
                     // If we are not going to render any stream, clean the
                     // surface.
                     cleanSurfaceViewRenderer();
@@ -1066,7 +1071,7 @@ public class WebRTCView extends ViewGroup {
 
             if (videoTrack != null) {
                 tryAddRendererToVideoTrack();
-                if (oldVideoTrack == null) {
+                if (oldVideoTrack == null && !preserveLastFrame) {
                     // If there was no old track, clean the surface so we start
                     // with black.
                     cleanSurfaceViewRenderer();

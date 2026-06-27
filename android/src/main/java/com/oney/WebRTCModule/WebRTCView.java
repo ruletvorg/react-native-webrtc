@@ -768,7 +768,6 @@ public class WebRTCView extends ViewGroup {
         textureStartupTop = top;
         textureStartupRight = right;
         textureStartupBottom = bottom;
-        showTextureResizeBlackOverlay(left, top, right, bottom);
     }
 
     private void resetTextureStartupFade(boolean removeOverlay) {

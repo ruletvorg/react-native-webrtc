@@ -54,9 +54,9 @@ public class WebRTCView extends ViewGroup {
     private static final ScalingType DEFAULT_SCALING_TYPE = ScalingType.SCALE_ASPECT_FIT;
 
     private static final int TEXTURE_STARTUP_STABILIZATION_FRAMES = 2;
-    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 3;
-    private static final long TEXTURE_RESIZE_BLACK_FADE_OUT_MS = 160;
-    private static final long TEXTURE_BLACK_OVERLAY_HARD_TIMEOUT_MS = 1000;
+    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 2;
+    private static final long TEXTURE_FADE_IN_MS = 160;
+    private static final long TEXTURE_FADE_HARD_TIMEOUT_MS = 1000;
     private static final String FIRST_FRAME_RENDERED_EVENT = "topFirstFrameRendered";
 
     private static final String TAG = WebRTCModule.TAG;
@@ -122,16 +122,6 @@ public class WebRTCView extends ViewGroup {
         }
     };
 
-    private final RendererEvents noopRendererEvents = new RendererEvents() {
-        @Override
-        public void onFirstFrameRendered() {
-        }
-
-        @Override
-        public void onFrameResolutionChanged(int videoWidth, int videoHeight, int rotation) {
-        }
-    };
-
     /**
      * The {@code Runnable} representation of
      * {@link #requestSurfaceViewRendererLayout()}. Explicitly defined in order
@@ -174,17 +164,9 @@ public class WebRTCView extends ViewGroup {
     private VideoSink rendererSink;
     private SurfaceViewRenderer surfaceViewRenderer;
     private VideoTextureViewRenderer textureViewRenderer;
-    private VideoTextureViewRenderer pendingTextureViewRenderer;
-    private boolean pendingTextureRendererAttached;
-    private boolean pendingTextureRendererInitialized;
     private boolean noanimation;
-    private boolean hasPendingTextureLayout;
-    private int pendingTextureBottom;
-    private int pendingTextureLeft;
-    private int pendingTextureRight;
-    private int pendingTextureTop;
-    private View textureResizeBlackOverlayView;
-    private int textureResizeFramesUntilCommit;
+    private boolean textureResizeFadePending;
+    private int textureResizeFramesUntilFade;
     private boolean textureStartupFadePending;
     private boolean textureStartupOverlayActive;
     private boolean textureStartupOverlayFading;
@@ -194,7 +176,7 @@ public class WebRTCView extends ViewGroup {
     private int textureStartupLeft;
     private int textureStartupRight;
     private int textureStartupTop;
-    private int textureBlackOverlayGeneration;
+    private int textureResizeFadeGeneration;
     private int textureStartupFadeGeneration;
 
     /**
@@ -243,7 +225,7 @@ public class WebRTCView extends ViewGroup {
         if (rendererView != null) {
             removeView(rendererView);
         }
-        resetTextureResizeStabilization();
+        resetTextureResizeFade();
         resetTextureStartupFade(true);
 
         createRenderer(nextRendererType);
@@ -257,9 +239,6 @@ public class WebRTCView extends ViewGroup {
         } else if (textureViewRenderer != null) {
             textureViewRenderer.setMirror(mirror);
         }
-        if (pendingTextureViewRenderer != null) {
-            pendingTextureViewRenderer.setMirror(mirror);
-        }
     }
 
     private void applyScalingType() {
@@ -267,9 +246,6 @@ public class WebRTCView extends ViewGroup {
             surfaceViewRenderer.setScalingType(scalingType);
         } else if (textureViewRenderer != null) {
             textureViewRenderer.setScalingType(scalingType);
-        }
-        if (pendingTextureViewRenderer != null) {
-            pendingTextureViewRenderer.setScalingType(scalingType);
         }
     }
 
@@ -531,10 +507,10 @@ public class WebRTCView extends ViewGroup {
         int targetHeight = targetBottom - targetTop;
 
         if (targetWidth <= 0 || targetHeight <= 0) {
-            resetTextureResizeStabilization(!isTextureStartupOverlayOwned());
+            resetTextureResizeFade();
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(0f);
-            maybeShowTextureStartupBlackOverlay();
+            markTextureStartupLayoutReady();
             return;
         }
 
@@ -545,54 +521,30 @@ public class WebRTCView extends ViewGroup {
         boolean isResizing = hasCurrentLayout && (targetWidth != currentWidth || targetHeight != currentHeight);
 
         if (!isResizing) {
-            resetTextureResizeStabilization(!isTextureStartupOverlayOwned());
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
-            maybeShowTextureStartupBlackOverlay();
+            markTextureStartupLayoutReady();
             return;
         }
 
         resetTextureStartupFade(false);
-
-        boolean targetChanged = !hasPendingTextureLayout
-                || pendingTextureLeft != targetLeft
-                || pendingTextureTop != targetTop
-                || pendingTextureRight != targetRight
-                || pendingTextureBottom != targetBottom;
-        if (targetChanged || textureResizeFramesUntilCommit == 0) {
-            textureResizeFramesUntilCommit = TEXTURE_RESIZE_STABILIZATION_FRAMES;
-        }
-
-        hasPendingTextureLayout = true;
-        pendingTextureLeft = targetLeft;
-        pendingTextureTop = targetTop;
-        pendingTextureRight = targetRight;
-        pendingTextureBottom = targetBottom;
-
-        int layoutWidth = Math.max(currentWidth, targetWidth);
-        int layoutHeight = Math.max(currentHeight, targetHeight);
-        int layoutLeft = targetLeft + (targetWidth - layoutWidth) / 2;
-        int layoutTop = targetTop + (targetHeight - layoutHeight) / 2;
-
-        rendererView.layout(layoutLeft, layoutTop, layoutLeft + layoutWidth, layoutTop + layoutHeight);
-        textureViewRenderer.setLayoutAspectRatio(layoutWidth / (float) layoutHeight);
-
-        if (!ensurePendingTextureRenderer()) {
-            return;
-        }
-
-        pendingTextureViewRenderer.layout(targetLeft, targetTop, targetRight, targetBottom);
-        pendingTextureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
-        rendererView.bringToFront();
-        showTextureResizeBlackOverlay(targetLeft, targetTop, targetRight, targetBottom);
-        tryAddPendingTextureRendererToVideoTrack();
+        armTextureResizeFade();
+        rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
+        textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
     }
 
     private void onTextureFrameRendered() {
+        if (textureResizeFadePending && textureResizeFramesUntilFade > 0) {
+            textureResizeFramesUntilFade--;
+            if (textureResizeFramesUntilFade <= 0) {
+                finishTextureResizeFade();
+            }
+            return;
+        }
+
         if (!textureStartupFadePending
                 || !textureStartupOverlayActive
-                || textureStartupFramesUntilFade <= 0
-                || hasPendingTextureLayout) {
+                || textureStartupFramesUntilFade <= 0) {
             return;
         }
 
@@ -604,75 +556,13 @@ public class WebRTCView extends ViewGroup {
         finishTextureStartupFade();
     }
 
-    private void onPendingTextureFrameRendered() {
-        if (!hasPendingTextureLayout || textureResizeFramesUntilCommit <= 0 || pendingTextureViewRenderer == null) {
-            return;
-        }
-
-        textureResizeFramesUntilCommit--;
-        if (textureResizeFramesUntilCommit > 0) {
-            return;
-        }
-
-        int left = pendingTextureLeft;
-        int top = pendingTextureTop;
-        int right = pendingTextureRight;
-        int bottom = pendingTextureBottom;
-        commitPendingTextureRenderer(left, top, right, bottom);
-    }
-
-    private void commitPendingTextureRenderer(int left, int top, int right, int bottom) {
-        if (pendingTextureViewRenderer == null) return;
-
-        VideoTextureViewRenderer oldTextureViewRenderer = textureViewRenderer;
-        View oldRendererView = rendererView;
-        VideoSink oldRendererSink = rendererSink;
-        boolean oldRendererAttached = rendererAttached;
-
-        textureViewRenderer = pendingTextureViewRenderer;
-        rendererView = pendingTextureViewRenderer;
-        rendererSink = pendingTextureViewRenderer;
-        rendererAttached = pendingTextureRendererAttached;
-
-        pendingTextureViewRenderer = null;
-        pendingTextureRendererAttached = false;
-        pendingTextureRendererInitialized = false;
-        hasPendingTextureLayout = false;
-        textureResizeFramesUntilCommit = 0;
-        pendingTextureLeft = 0;
-        pendingTextureTop = 0;
-        pendingTextureRight = 0;
-        pendingTextureBottom = 0;
-
-        textureViewRenderer.setFrameRenderedListener(() -> WebRTCView.this.onTextureFrameRendered());
-        textureViewRenderer.layout(left, top, right, bottom);
-        int height = bottom - top;
-        textureViewRenderer.setLayoutAspectRatio(height > 0 ? (right - left) / (float) height : 0f);
-        textureViewRenderer.bringToFront();
-        fadeOutTextureResizeBlackOverlay();
-
-        if (oldRendererAttached && oldRendererSink != null && videoTrack != null) {
-            removeSinkFromVideoTrack(videoTrack, oldRendererSink);
-        }
-        if (oldTextureViewRenderer != null) {
-            oldTextureViewRenderer.setFrameRenderedListener(null);
-            oldTextureViewRenderer.release();
-            if (oldRendererAttached) {
-                surfaceViewRendererInstances--;
-            }
-        }
-        if (oldRendererView != null) {
-            removeView(oldRendererView);
-        }
-    }
-
     /**
      * Stops rendering {@link #videoTrack} and releases the associated acquired
      * resources (if rendering is in progress).
      */
     private void removeRendererFromVideoTrack() {
         resetTextureStartupFade(true);
-        removePendingTextureRenderer();
+        resetTextureResizeFade();
 
         if (rendererAttached) {
             if (videoTrack != null) {
@@ -709,21 +599,49 @@ public class WebRTCView extends ViewGroup {
         });
     }
 
-    private void resetTextureResizeStabilization() {
-        resetTextureResizeStabilization(true);
+    private void armTextureResizeFade() {
+        if (textureViewRenderer == null) return;
+        if (noanimation) {
+            resetTextureResizeFade();
+            return;
+        }
+
+        textureResizeFadeGeneration++;
+        textureResizeFadePending = true;
+        textureResizeFramesUntilFade = TEXTURE_RESIZE_STABILIZATION_FRAMES;
+        textureViewRenderer.animate().cancel();
+        textureViewRenderer.animate().setListener(null);
+        textureViewRenderer.setAlpha(0f);
+        scheduleTextureResizeFadeHardTimeout();
     }
 
-    private void resetTextureResizeStabilization(boolean removeOverlay) {
-        hasPendingTextureLayout = false;
-        textureResizeFramesUntilCommit = 0;
-        pendingTextureLeft = 0;
-        pendingTextureTop = 0;
-        pendingTextureRight = 0;
-        pendingTextureBottom = 0;
-        removePendingTextureRenderer(removeOverlay);
-        if (removeOverlay) {
-            removeTextureResizeBlackOverlay();
+    private void scheduleTextureResizeFadeHardTimeout() {
+        final int generation = textureResizeFadeGeneration;
+
+        postDelayed(() -> {
+            if (generation != textureResizeFadeGeneration || !textureResizeFadePending) {
+                return;
+            }
+
+            finishTextureResizeFade();
+        }, TEXTURE_FADE_HARD_TIMEOUT_MS);
+    }
+
+    private void finishTextureResizeFade() {
+        if (textureViewRenderer == null) {
+            resetTextureResizeFade();
+            return;
         }
+
+        textureResizeFadePending = false;
+        textureResizeFramesUntilFade = 0;
+        fadeInTextureRenderer(null);
+    }
+
+    private void resetTextureResizeFade() {
+        textureResizeFadeGeneration++;
+        textureResizeFadePending = false;
+        textureResizeFramesUntilFade = 0;
     }
 
     private boolean isTextureStartupOverlayOwned() {
@@ -747,9 +665,10 @@ public class WebRTCView extends ViewGroup {
         textureStartupRight = 0;
         textureStartupBottom = 0;
         textureViewRenderer.animate().cancel();
+        textureViewRenderer.animate().setListener(null);
         textureViewRenderer.setAlpha(0f);
         scheduleTextureStartupFadeHardTimeout();
-        maybeShowTextureStartupBlackOverlay();
+        markTextureStartupLayoutReady();
     }
 
     private void scheduleTextureStartupFadeHardTimeout() {
@@ -763,11 +682,11 @@ public class WebRTCView extends ViewGroup {
             }
 
             finishTextureStartupFade();
-        }, TEXTURE_BLACK_OVERLAY_HARD_TIMEOUT_MS);
+        }, TEXTURE_FADE_HARD_TIMEOUT_MS);
     }
 
-    private void maybeShowTextureStartupBlackOverlay() {
-        if (!textureStartupFadePending || textureViewRenderer == null || hasPendingTextureLayout) return;
+    private void markTextureStartupLayoutReady() {
+        if (!textureStartupFadePending || textureViewRenderer == null) return;
 
         int left = 0;
         int top = 0;
@@ -802,14 +721,14 @@ public class WebRTCView extends ViewGroup {
         textureStartupFadePending = false;
         textureStartupOverlayActive = false;
         textureStartupOverlayFading = true;
-        fadeInTextureStartupRenderer(() -> {
+        fadeInTextureRenderer(() -> {
             textureStartupOverlayFading = false;
             textureFirstFrameWaitingForStartup = false;
             emitFirstFrameRenderedIfNeeded();
         });
     }
 
-    private void fadeInTextureStartupRenderer(Runnable onEnd) {
+    private void fadeInTextureRenderer(Runnable onEnd) {
         if (textureViewRenderer == null) {
             if (onEnd != null) {
                 onEnd.run();
@@ -830,7 +749,7 @@ public class WebRTCView extends ViewGroup {
         renderer.animate().cancel();
         renderer.animate()
                 .alpha(1f)
-                .setDuration(TEXTURE_RESIZE_BLACK_FADE_OUT_MS)
+                .setDuration(TEXTURE_FADE_IN_MS)
                 .setListener(new AnimatorListenerAdapter() {
                     private boolean canceled;
 
@@ -864,9 +783,6 @@ public class WebRTCView extends ViewGroup {
         textureStartupTop = 0;
         textureStartupRight = 0;
         textureStartupBottom = 0;
-        if (removeOverlay) {
-            removeTextureResizeBlackOverlay();
-        }
         if (textureViewRenderer != null) {
             textureViewRenderer.animate().cancel();
             textureViewRenderer.animate().setListener(null);
@@ -876,206 +792,14 @@ public class WebRTCView extends ViewGroup {
 
     private VideoTextureViewRenderer createTextureRenderer() {
         VideoTextureViewRenderer renderer = new VideoTextureViewRenderer(getContext());
+        if (!noanimation) {
+            renderer.setAlpha(0f);
+        }
         renderer.setMirror(mirror);
         if (scalingType != null) {
             renderer.setScalingType(scalingType);
         }
         return renderer;
-    }
-
-    private boolean ensurePendingTextureRenderer() {
-        if (pendingTextureViewRenderer != null) return true;
-
-        pendingTextureViewRenderer = createTextureRenderer();
-        pendingTextureViewRenderer.setFrameRenderedListener(() -> WebRTCView.this.onPendingTextureFrameRendered());
-        addView(pendingTextureViewRenderer, 0);
-        return true;
-    }
-
-    private void showTextureResizeBlackOverlay(int left, int top, int right, int bottom) {
-        if (noanimation) {
-            return;
-        }
-
-        boolean createdOverlay = textureResizeBlackOverlayView == null;
-        if (textureResizeBlackOverlayView == null) {
-            textureResizeBlackOverlayView = new View(getContext());
-            textureResizeBlackOverlayView.setBackgroundColor(Color.BLACK);
-            textureResizeBlackOverlayView.setClickable(false);
-            textureResizeBlackOverlayView.setFocusable(false);
-            textureResizeBlackOverlayView.setAlpha(1f);
-            addView(textureResizeBlackOverlayView);
-        } else {
-            textureResizeBlackOverlayView.animate().cancel();
-            textureResizeBlackOverlayView.animate().setListener(null);
-            textureResizeBlackOverlayView.setAlpha(1f);
-        }
-
-        textureResizeBlackOverlayView.layout(left, top, right, bottom);
-        textureResizeBlackOverlayView.bringToFront();
-        if (createdOverlay) {
-            scheduleTextureBlackOverlayHardTimeout();
-        }
-    }
-
-    private void scheduleTextureBlackOverlayHardTimeout() {
-        final int generation = ++textureBlackOverlayGeneration;
-
-        // Some TextureView devices do not report enough rendered frames, so the overlay needs a hard stop.
-        postDelayed(() -> {
-            if (generation != textureBlackOverlayGeneration || textureResizeBlackOverlayView == null) {
-                return;
-            }
-
-            if (hasPendingTextureLayout) {
-                int left = pendingTextureLeft;
-                int top = pendingTextureTop;
-                int right = pendingTextureRight;
-                int bottom = pendingTextureBottom;
-
-                resetTextureResizeStabilization(false);
-                layoutTextureRendererAfterAbortedResize(left, top, right, bottom);
-            }
-
-            resetTextureStartupFade(false);
-            fadeOutTextureResizeBlackOverlay();
-        }, TEXTURE_BLACK_OVERLAY_HARD_TIMEOUT_MS);
-    }
-
-    private void layoutTextureRendererAfterAbortedResize(int left, int top, int right, int bottom) {
-        if (textureViewRenderer == null || rendererView == null) return;
-        if (right <= left || bottom <= top) return;
-
-        rendererView.layout(left, top, right, bottom);
-        textureViewRenderer.setLayoutAspectRatio((right - left) / (float) (bottom - top));
-    }
-
-    private void fadeOutTextureResizeBlackOverlay() {
-        fadeOutTextureResizeBlackOverlay(null);
-    }
-
-    private void fadeOutTextureResizeBlackOverlay(Runnable onEnd) {
-        if (textureResizeBlackOverlayView == null) {
-            if (onEnd != null) {
-                onEnd.run();
-            }
-            return;
-        }
-
-        if (noanimation) {
-            removeTextureResizeBlackOverlay();
-            if (onEnd != null) {
-                onEnd.run();
-            }
-            return;
-        }
-
-        final View overlay = textureResizeBlackOverlayView;
-        overlay.bringToFront();
-        overlay.animate().cancel();
-        overlay.animate()
-                .alpha(0f)
-                .setDuration(TEXTURE_RESIZE_BLACK_FADE_OUT_MS)
-                .setListener(new AnimatorListenerAdapter() {
-                    private boolean canceled;
-
-                    @Override
-                    public void onAnimationCancel(Animator animation) {
-                        canceled = true;
-                    }
-
-                    @Override
-                    public void onAnimationEnd(Animator animation) {
-                        overlay.animate().setListener(null);
-                        if (!canceled && textureResizeBlackOverlayView == overlay) {
-                            removeTextureResizeBlackOverlay();
-                        }
-                        if (onEnd != null) {
-                            onEnd.run();
-                        }
-                    }
-                })
-                .start();
-    }
-
-    private void removeTextureResizeBlackOverlay() {
-        if (textureResizeBlackOverlayView == null) return;
-
-        textureBlackOverlayGeneration++;
-        textureResizeBlackOverlayView.animate().cancel();
-        textureResizeBlackOverlayView.animate().setListener(null);
-        removeView(textureResizeBlackOverlayView);
-        textureResizeBlackOverlayView = null;
-    }
-
-    private void tryAddPendingTextureRendererToVideoTrack() {
-        if (pendingTextureRendererAttached
-                || pendingTextureViewRenderer == null
-                || videoTrack == null
-                || !ViewCompat.isAttachedToWindow(this)) {
-            return;
-        }
-
-        EglBase.Context sharedContext = EglUtils.getRootEglBaseContext();
-        if (sharedContext == null) {
-            Log.e(TAG, "Failed to initialize pending TextureView renderer.");
-            removePendingTextureRenderer();
-            return;
-        }
-
-        try {
-            pendingTextureViewRenderer.init(sharedContext, noopRendererEvents);
-            pendingTextureRendererInitialized = true;
-            surfaceViewRendererInstances++;
-        } catch (Exception e) {
-            Logging.e(TAG, "Failed to initialize pending TextureView renderer", e);
-            removePendingTextureRenderer();
-            return;
-        }
-
-        final VideoSink sink = pendingTextureViewRenderer;
-        final VideoTrack track = videoTrack;
-        ThreadUtils.runOnExecutor(() -> {
-            try {
-                track.addSink(sink);
-            } catch (Throwable tr) {
-                Log.e(TAG, "Failed to add pending TextureView renderer", tr);
-            }
-        });
-
-        pendingTextureRendererAttached = true;
-    }
-
-    private void removePendingTextureRenderer() {
-        removePendingTextureRenderer(true);
-    }
-
-    private void removePendingTextureRenderer(boolean removeOverlay) {
-        if (pendingTextureViewRenderer == null) return;
-
-        if (pendingTextureRendererAttached && videoTrack != null) {
-            removeSinkFromVideoTrack(videoTrack, pendingTextureViewRenderer);
-        }
-
-        pendingTextureViewRenderer.setFrameRenderedListener(null);
-        if (pendingTextureRendererInitialized) {
-            pendingTextureViewRenderer.release();
-            surfaceViewRendererInstances--;
-        }
-        removeView(pendingTextureViewRenderer);
-
-        pendingTextureViewRenderer = null;
-        pendingTextureRendererAttached = false;
-        pendingTextureRendererInitialized = false;
-        hasPendingTextureLayout = false;
-        textureResizeFramesUntilCommit = 0;
-        pendingTextureLeft = 0;
-        pendingTextureTop = 0;
-        pendingTextureRight = 0;
-        pendingTextureBottom = 0;
-        if (removeOverlay) {
-            removeTextureResizeBlackOverlay();
-        }
     }
 
     /**
@@ -1158,6 +882,7 @@ public class WebRTCView extends ViewGroup {
         this.noanimation = noanimation;
         if (noanimation) {
             boolean shouldEmitFirstFrame = textureFirstFrameWaitingForStartup;
+            resetTextureResizeFade();
             resetTextureStartupFade(true);
             if (shouldEmitFirstFrame) {
                 emitFirstFrameRenderedIfNeeded();

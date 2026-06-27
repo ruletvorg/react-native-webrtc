@@ -153,6 +153,11 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             lastTextureUpdateGeneration.get() >= generation
     }
 
+    fun hasDrawnFrame(): Boolean {
+        val generation = lastRenderedGeneration.get()
+        return generation > 0 && lastTextureUpdateGeneration.get() >= generation
+    }
+
     fun layoutWithReadyBuffer(left: Int, top: Int, right: Int, bottom: Int, aspectRatio: Float) {
         ThreadUtils.checkIsOnMainThread()
         suppressNextResizeTransform = true

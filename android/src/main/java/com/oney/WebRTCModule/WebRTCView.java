@@ -174,6 +174,8 @@ public class WebRTCView extends ViewGroup {
     private VideoSink rendererSink;
     private SurfaceViewRenderer surfaceViewRenderer;
     private VideoTextureViewRenderer textureViewRenderer;
+    private VideoTextureViewRenderer textureResizeSwapRenderer;
+    private VideoTrack textureResizeSwapTrack;
     private boolean noanimation;
     private boolean preserveLastFrame;
     private ImageView lastFrameOverlayView;
@@ -199,6 +201,11 @@ public class WebRTCView extends ViewGroup {
     private int textureStartupTop;
     private int textureResizeFadeGeneration;
     private int textureStartupFadeGeneration;
+    private int textureResizeSwapBottom;
+    private int textureResizeSwapGeneration;
+    private int textureResizeSwapLeft;
+    private int textureResizeSwapRight;
+    private int textureResizeSwapTop;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -561,6 +568,12 @@ public class WebRTCView extends ViewGroup {
         }
 
         resetTextureStartupFade(false);
+        if (startTextureResizeSwap(targetLeft, targetTop, targetRight, targetBottom, targetAspectRatio)) {
+            resetTextureResizeSnapshot();
+            resetTextureResizeFade();
+            return;
+        }
+
         if (noanimation) {
             resetTextureResizeFade();
             boolean snapshotArmed = armTextureResizeSnapshot(targetLeft, targetTop, targetRight, targetBottom);
@@ -659,12 +672,147 @@ public class WebRTCView extends ViewGroup {
         textureResizeLayoutBottom = 0;
     }
 
+    private boolean startTextureResizeSwap(
+            int left,
+            int top,
+            int right,
+            int bottom,
+            float aspectRatio) {
+        if (textureViewRenderer == null || videoTrack == null || !rendererAttached) {
+            return false;
+        }
+
+        int width = right - left;
+        int height = bottom - top;
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+
+        if (textureResizeSwapRenderer != null
+                && textureResizeSwapLeft == left
+                && textureResizeSwapTop == top
+                && textureResizeSwapRight == right
+                && textureResizeSwapBottom == bottom) {
+            return true;
+        }
+
+        EglBase.Context sharedContext = EglUtils.getRootEglBaseContext();
+        if (sharedContext == null) {
+            return false;
+        }
+
+        cancelTextureResizeSwap();
+
+        final int generation = ++textureResizeSwapGeneration;
+        final VideoTextureViewRenderer nextRenderer = createTextureRenderer();
+        nextRenderer.setAlpha(0f);
+        nextRenderer.setTextureUpdatedListener(() -> onTextureResizeSwapUpdated(nextRenderer, generation));
+
+        try {
+            nextRenderer.init(sharedContext, rendererEvents);
+            surfaceViewRendererInstances++;
+        } catch (Exception e) {
+            Logging.e(TAG, "Failed to initialize resize renderer on instance " + surfaceViewRendererInstances, e);
+            nextRenderer.release();
+            return false;
+        }
+
+        textureResizeSwapRenderer = nextRenderer;
+        textureResizeSwapTrack = videoTrack;
+        textureResizeSwapLeft = left;
+        textureResizeSwapTop = top;
+        textureResizeSwapRight = right;
+        textureResizeSwapBottom = bottom;
+
+        addView(nextRenderer);
+        nextRenderer.layoutWithReadyBuffer(left, top, right, bottom, aspectRatio);
+        nextRenderer.prepareForLayoutSize(width, height);
+        nextRenderer.bringToFront();
+        addSinkToVideoTrack(textureResizeSwapTrack, nextRenderer);
+        return true;
+    }
+
+    private void onTextureResizeSwapUpdated(VideoTextureViewRenderer renderer, int generation) {
+        if (renderer != textureResizeSwapRenderer || generation != textureResizeSwapGeneration) {
+            return;
+        }
+        if (!renderer.hasDrawnFrame()) {
+            return;
+        }
+
+        finishTextureResizeSwap(renderer, generation);
+    }
+
+    private void finishTextureResizeSwap(VideoTextureViewRenderer nextRenderer, int generation) {
+        if (nextRenderer != textureResizeSwapRenderer || generation != textureResizeSwapGeneration) {
+            return;
+        }
+
+        final VideoTextureViewRenderer previousRenderer = textureViewRenderer;
+        final VideoSink previousSink = rendererSink;
+        final VideoTrack previousTrack = videoTrack;
+
+        textureResizeSwapRenderer = null;
+        textureResizeSwapTrack = null;
+        textureResizeSwapLeft = 0;
+        textureResizeSwapTop = 0;
+        textureResizeSwapRight = 0;
+        textureResizeSwapBottom = 0;
+
+        textureViewRenderer = nextRenderer;
+        rendererView = nextRenderer;
+        rendererSink = nextRenderer;
+        nextRenderer.setTextureUpdatedListener(() -> WebRTCView.this.onTextureUpdated());
+        nextRenderer.animate().cancel();
+        nextRenderer.animate().setListener(null);
+        nextRenderer.setAlpha(1f);
+
+        if (previousTrack != null && previousSink != null) {
+            removeSinkFromVideoTrack(previousTrack, previousSink);
+        }
+        if (previousRenderer != null) {
+            previousRenderer.setTextureUpdatedListener(null);
+            previousRenderer.release();
+            surfaceViewRendererInstances--;
+            removeView(previousRenderer);
+        }
+
+        resetTextureResizeSnapshot();
+        resetTextureResizeFade();
+        clearPendingTextureResizeLayout();
+        requestSurfaceViewRendererLayout();
+    }
+
+    private void cancelTextureResizeSwap() {
+        textureResizeSwapGeneration++;
+        final VideoTextureViewRenderer renderer = textureResizeSwapRenderer;
+        final VideoTrack track = textureResizeSwapTrack;
+
+        textureResizeSwapRenderer = null;
+        textureResizeSwapTrack = null;
+        textureResizeSwapLeft = 0;
+        textureResizeSwapTop = 0;
+        textureResizeSwapRight = 0;
+        textureResizeSwapBottom = 0;
+
+        if (renderer == null) return;
+
+        if (track != null) {
+            removeSinkFromVideoTrack(track, renderer);
+        }
+        renderer.setTextureUpdatedListener(null);
+        renderer.release();
+        surfaceViewRendererInstances--;
+        removeView(renderer);
+    }
+
     /**
      * Stops rendering {@link #videoTrack} and releases the associated acquired
      * resources (if rendering is in progress).
      */
     private void removeRendererFromVideoTrack() {
         cacheLastTextureFrame();
+        cancelTextureResizeSwap();
         resetTextureStartupFade(true);
         resetTextureResizeSnapshot();
         resetTextureResizeFade();
@@ -700,6 +848,22 @@ public class WebRTCView extends ViewGroup {
                 // XXX If WebRTCModule#mediaStreamTrackRelease has already been
                 // invoked on videoTrack, then it is no longer safe to call removeSink
                 // on the instance, it will throw IllegalStateException.
+            }
+        });
+    }
+
+    private void addSinkToVideoTrack(VideoTrack track, VideoSink sink) {
+        if (track == null || sink == null) return;
+
+        ThreadUtils.runOnExecutor(() -> {
+            try {
+                track.addSink(sink);
+            } catch (Throwable tr) {
+                // XXX If WebRTCModule#mediaStreamTrackRelease has already been
+                // invoked on videoTrack, then it is no longer safe to call addSink
+                // on the instance, it will throw IllegalStateException.
+
+                Log.e(TAG, "Failed to add renderer", tr);
             }
         });
     }
@@ -1331,17 +1495,7 @@ public class WebRTCView extends ViewGroup {
 
             final VideoSink sink = rendererSink;
             final VideoTrack track = videoTrack;
-            ThreadUtils.runOnExecutor(() -> {
-                try {
-                    track.addSink(sink);
-                } catch (Throwable tr) {
-                    // XXX If WebRTCModule#mediaStreamTrackRelease has already been
-                    // invoked on videoTrack, then it is no longer safe to call addSink
-                    // on the instance, it will throw IllegalStateException.
-
-                    Log.e(TAG, "Failed to add renderer", tr);
-                }
-            });
+            addSinkToVideoTrack(track, sink);
 
             rendererAttached = true;
         }

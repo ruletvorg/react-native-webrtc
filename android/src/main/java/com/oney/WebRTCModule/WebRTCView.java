@@ -11,6 +11,8 @@ import android.util.Log;
 import android.util.LruCache;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 
 import androidx.core.view.ViewCompat;
@@ -174,6 +176,7 @@ public class WebRTCView extends ViewGroup {
     private View rendererView;
     private VideoSink rendererSink;
     private SurfaceViewRenderer surfaceViewRenderer;
+    private FrameLayout textureRendererContainer;
     private VideoTextureViewRenderer textureViewRenderer;
     private VideoTextureViewRenderer textureResizeSwapRenderer;
     private VideoTrack textureResizeSwapTrack;
@@ -229,12 +232,17 @@ public class WebRTCView extends ViewGroup {
     private void createRenderer(RendererType rendererType) {
         this.rendererType = rendererType;
         surfaceViewRenderer = null;
+        textureRendererContainer = null;
         textureViewRenderer = null;
 
         if (rendererType == RendererType.TEXTURE) {
+            textureRendererContainer = new FrameLayout(getContext());
+            textureRendererContainer.setClipChildren(true);
+            textureRendererContainer.setClipToPadding(true);
             textureViewRenderer = createTextureRenderer();
             textureViewRenderer.setTextureUpdatedListener(() -> WebRTCView.this.onTextureUpdated());
-            rendererView = textureViewRenderer;
+            textureRendererContainer.addView(textureViewRenderer);
+            rendererView = textureRendererContainer;
             rendererSink = textureViewRenderer;
         } else {
             surfaceViewRenderer = new SurfaceViewRenderer(getContext());
@@ -547,32 +555,46 @@ public class WebRTCView extends ViewGroup {
         int targetHeight = targetBottom - targetTop;
 
         if (targetWidth <= 0 || targetHeight <= 0) {
+            cancelTextureResizeSwap();
             resetTextureResizeSnapshot();
             resetTextureResizeFade();
             clearPendingTextureResizeLayout();
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
+            textureViewRenderer.layout(0, 0, 0, 0);
             textureViewRenderer.setLayoutAspectRatio(0f);
             markTextureStartupLayoutReady();
             return;
         }
 
         float targetAspectRatio = targetWidth / (float) targetHeight;
-        int currentWidth = rendererView.getWidth();
-        int currentHeight = rendererView.getHeight();
-        boolean hasCurrentLayout = currentWidth > 0 && currentHeight > 0;
-        boolean isResizing = hasCurrentLayout && (targetWidth != currentWidth || targetHeight != currentHeight);
+        rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
 
-        if (!isResizing) {
+        int currentWidth = textureViewRenderer.getWidth();
+        int currentHeight = textureViewRenderer.getHeight();
+        boolean hasCurrentLayout = currentWidth > 0 && currentHeight > 0;
+        boolean isInitialLayout = !hasCurrentLayout;
+        boolean isGrowing = hasCurrentLayout && (targetWidth > currentWidth || targetHeight > currentHeight);
+        boolean aspectChanged = hasCurrentLayout
+                && Math.abs((currentWidth / (float) currentHeight) - targetAspectRatio) > 0.01f;
+
+        if (isInitialLayout) {
+            cancelTextureResizeSwap();
             clearPendingTextureResizeLayout();
             textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
-            rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
-            textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+            layoutTextureRendererChildCentered(targetWidth, targetHeight, targetWidth, targetHeight);
+            markTextureStartupLayoutReady();
+            return;
+        }
+
+        if (!isGrowing && !aspectChanged) {
+            clearPendingTextureResizeLayout();
+            layoutTextureRendererChildCentered(targetWidth, targetHeight, currentWidth, currentHeight);
             markTextureStartupLayoutReady();
             return;
         }
 
         resetTextureStartupFade(false);
-        if (startTextureResizeSwap(targetLeft, targetTop, targetRight, targetBottom, targetAspectRatio)) {
+        if (startTextureResizeSwap(targetLeft, targetTop, targetRight, targetBottom, targetWidth, targetHeight, targetAspectRatio)) {
             resetTextureResizeFade();
             return;
         }
@@ -584,7 +606,7 @@ public class WebRTCView extends ViewGroup {
             boolean snapshotArmed = armTextureResizeSnapshot(targetLeft, targetTop, targetRight, targetBottom);
             int targetGeneration = textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
             textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
-            setPendingTextureResizeLayout(targetLeft, targetTop, targetRight, targetBottom);
+            setPendingTextureResizeLayout(0, 0, targetWidth, targetHeight);
             if (snapshotArmed) {
                 textureResizeTargetGeneration = targetGeneration;
             } else {
@@ -597,7 +619,24 @@ public class WebRTCView extends ViewGroup {
         }
         textureResizeTargetGeneration = textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
         textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
-        setPendingTextureResizeLayout(targetLeft, targetTop, targetRight, targetBottom);
+        setPendingTextureResizeLayout(0, 0, targetWidth, targetHeight);
+    }
+
+    private void layoutTextureRendererChildCentered(
+            int containerWidth,
+            int containerHeight,
+            int childWidth,
+            int childHeight) {
+        if (textureViewRenderer == null) return;
+
+        int childLeft = (containerWidth - childWidth) / 2;
+        int childTop = (containerHeight - childHeight) / 2;
+        textureViewRenderer.layoutWithReadyBuffer(
+                childLeft,
+                childTop,
+                childLeft + childWidth,
+                childTop + childHeight,
+                childWidth / (float) childHeight);
     }
 
     private void onTextureUpdated() {
@@ -682,13 +721,13 @@ public class WebRTCView extends ViewGroup {
             int top,
             int right,
             int bottom,
+            int width,
+            int height,
             float aspectRatio) {
         if (textureViewRenderer == null || videoTrack == null || !rendererAttached) {
             return false;
         }
 
-        int width = right - left;
-        int height = bottom - top;
         if (width <= 0 || height <= 0) {
             return false;
         }
@@ -734,8 +773,8 @@ public class WebRTCView extends ViewGroup {
         textureResizeSwapFramesUntilReady = TEXTURE_RESIZE_SWAP_STABILIZATION_FRAMES;
         textureResizeSwapHidPrevious = true;
 
-        addView(nextRenderer);
-        nextRenderer.layoutWithReadyBuffer(left, top, right, bottom, aspectRatio);
+        addTextureRendererView(nextRenderer);
+        nextRenderer.layoutWithReadyBuffer(0, 0, width, height, aspectRatio);
         nextRenderer.prepareForLayoutSize(width, height);
         nextRenderer.bringToFront();
         textureViewRenderer.animate().cancel();
@@ -786,7 +825,7 @@ public class WebRTCView extends ViewGroup {
         textureResizeSwapHidPrevious = false;
 
         textureViewRenderer = nextRenderer;
-        rendererView = nextRenderer;
+        rendererView = textureRendererContainer != null ? textureRendererContainer : nextRenderer;
         rendererSink = nextRenderer;
         nextRenderer.setTextureUpdatedListener(() -> WebRTCView.this.onTextureUpdated());
         nextRenderer.animate().cancel();
@@ -800,7 +839,7 @@ public class WebRTCView extends ViewGroup {
             previousRenderer.setTextureUpdatedListener(null);
             previousRenderer.release();
             surfaceViewRendererInstances--;
-            removeView(previousRenderer);
+            removeViewFromParent(previousRenderer);
         }
 
         resetTextureResizeSnapshot();
@@ -852,7 +891,7 @@ public class WebRTCView extends ViewGroup {
         renderer.setTextureUpdatedListener(null);
         renderer.release();
         surfaceViewRendererInstances--;
-        removeView(renderer);
+        removeViewFromParent(renderer);
     }
 
     private void scheduleTextureResizeSwapHardTimeout(int generation) {
@@ -924,6 +963,23 @@ public class WebRTCView extends ViewGroup {
                 Log.e(TAG, "Failed to add renderer", tr);
             }
         });
+    }
+
+    private void addTextureRendererView(VideoTextureViewRenderer renderer) {
+        if (textureRendererContainer != null) {
+            textureRendererContainer.addView(renderer);
+        } else {
+            addView(renderer);
+        }
+    }
+
+    private void removeViewFromParent(View view) {
+        if (view == null) return;
+
+        ViewParent parent = view.getParent();
+        if (parent instanceof ViewGroup) {
+            ((ViewGroup) parent).removeView(view);
+        }
     }
 
     private void cacheLastTextureFrame() {

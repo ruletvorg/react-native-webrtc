@@ -4,11 +4,14 @@ import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.util.Log;
+import android.util.LruCache;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageView;
 
 import androidx.core.view.ViewCompat;
 
@@ -58,8 +61,15 @@ public class WebRTCView extends ViewGroup {
     private static final long TEXTURE_FADE_IN_MS = 160;
     private static final long TEXTURE_FADE_HARD_TIMEOUT_MS = 1000;
     private static final String FIRST_FRAME_RENDERED_EVENT = "topFirstFrameRendered";
+    private static final int LAST_FRAME_CACHE_KB = 16 * 1024;
 
     private static final String TAG = WebRTCModule.TAG;
+    private static final LruCache<String, Bitmap> lastFrameCache = new LruCache<String, Bitmap>(LAST_FRAME_CACHE_KB) {
+        @Override
+        protected int sizeOf(String key, Bitmap bitmap) {
+            return Math.max(1, bitmap.getByteCount() / 1024);
+        }
+    };
 
     /**
      * The number of instances for {@link SurfaceViewRenderer}, used for logging.
@@ -165,6 +175,8 @@ public class WebRTCView extends ViewGroup {
     private SurfaceViewRenderer surfaceViewRenderer;
     private VideoTextureViewRenderer textureViewRenderer;
     private boolean noanimation;
+    private boolean preserveLastFrame;
+    private ImageView lastFrameOverlayView;
     private boolean textureResizeFadePending;
     private int textureResizeFramesUntilFade;
     private boolean textureStartupFadePending;
@@ -225,6 +237,7 @@ public class WebRTCView extends ViewGroup {
         if (rendererView != null) {
             removeView(rendererView);
         }
+        removeLastFrameOverlay();
         resetTextureResizeFade();
         resetTextureStartupFade(true);
 
@@ -496,10 +509,12 @@ public class WebRTCView extends ViewGroup {
 
         if (textureViewRenderer == null) {
             rendererView.layout(left, top, right, bottom);
+            layoutLastFrameOverlay(left, top, right, bottom);
             return;
         }
 
         layoutTextureRendererView(left, top, right, bottom);
+        layoutLastFrameOverlay(left, top, right, bottom);
     }
 
     private void layoutTextureRendererView(int targetLeft, int targetTop, int targetRight, int targetBottom) {
@@ -561,6 +576,7 @@ public class WebRTCView extends ViewGroup {
      * resources (if rendering is in progress).
      */
     private void removeRendererFromVideoTrack() {
+        cacheLastTextureFrame();
         resetTextureStartupFade(true);
         resetTextureResizeFade();
 
@@ -597,6 +613,86 @@ public class WebRTCView extends ViewGroup {
                 // on the instance, it will throw IllegalStateException.
             }
         });
+    }
+
+    private void cacheLastTextureFrame() {
+        if (!preserveLastFrame || streamURL == null || textureViewRenderer == null) return;
+        if (textureViewRenderer.getWidth() <= 0 || textureViewRenderer.getHeight() <= 0) return;
+
+        try {
+            Bitmap bitmap = textureViewRenderer.getBitmap();
+            if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
+                return;
+            }
+            synchronized (lastFrameCache) {
+                lastFrameCache.put(streamURL, bitmap);
+            }
+        } catch (Throwable tr) {
+            Log.w(TAG, "Failed to cache last TextureView frame.", tr);
+        }
+    }
+
+    private void maybeShowLastFrameOverlay() {
+        if (!preserveLastFrame || noanimation || streamURL == null || lastFrameOverlayView != null) return;
+
+        Bitmap bitmap;
+        synchronized (lastFrameCache) {
+            bitmap = lastFrameCache.get(streamURL);
+        }
+        if (bitmap == null || bitmap.isRecycled()) return;
+
+        ImageView overlay = new ImageView(getContext());
+        overlay.setImageBitmap(bitmap);
+        overlay.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        overlay.setAlpha(1f);
+        overlay.setClickable(false);
+        overlay.setFocusable(false);
+        lastFrameOverlayView = overlay;
+        addView(overlay);
+        overlay.bringToFront();
+        requestSurfaceViewRendererLayout();
+    }
+
+    private void layoutLastFrameOverlay(int left, int top, int right, int bottom) {
+        if (lastFrameOverlayView == null) return;
+        lastFrameOverlayView.layout(left, top, right, bottom);
+        lastFrameOverlayView.bringToFront();
+    }
+
+    private void fadeOutLastFrameOverlay() {
+        if (lastFrameOverlayView == null) return;
+
+        final ImageView overlay = lastFrameOverlayView;
+        overlay.animate().cancel();
+        overlay.animate()
+                .alpha(0f)
+                .setDuration(TEXTURE_FADE_IN_MS)
+                .setListener(new AnimatorListenerAdapter() {
+                    private boolean canceled;
+
+                    @Override
+                    public void onAnimationCancel(Animator animation) {
+                        canceled = true;
+                    }
+
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        overlay.animate().setListener(null);
+                        if (!canceled && lastFrameOverlayView == overlay) {
+                            removeLastFrameOverlay();
+                        }
+                    }
+                })
+                .start();
+    }
+
+    private void removeLastFrameOverlay() {
+        if (lastFrameOverlayView == null) return;
+
+        lastFrameOverlayView.animate().cancel();
+        lastFrameOverlayView.animate().setListener(null);
+        removeView(lastFrameOverlayView);
+        lastFrameOverlayView = null;
     }
 
     private void armTextureResizeFade() {
@@ -739,6 +835,7 @@ public class WebRTCView extends ViewGroup {
         if (noanimation) {
             textureViewRenderer.animate().cancel();
             textureViewRenderer.setAlpha(1f);
+            removeLastFrameOverlay();
             if (onEnd != null) {
                 onEnd.run();
             }
@@ -747,6 +844,7 @@ public class WebRTCView extends ViewGroup {
 
         final VideoTextureViewRenderer renderer = textureViewRenderer;
         renderer.animate().cancel();
+        fadeOutLastFrameOverlay();
         renderer.animate()
                 .alpha(1f)
                 .setDuration(TEXTURE_FADE_IN_MS)
@@ -787,6 +885,9 @@ public class WebRTCView extends ViewGroup {
             textureViewRenderer.animate().cancel();
             textureViewRenderer.animate().setListener(null);
             textureViewRenderer.setAlpha(1f);
+        }
+        if (noanimation) {
+            removeLastFrameOverlay();
         }
     }
 
@@ -884,9 +985,19 @@ public class WebRTCView extends ViewGroup {
             boolean shouldEmitFirstFrame = textureFirstFrameWaitingForStartup;
             resetTextureResizeFade();
             resetTextureStartupFade(true);
+            removeLastFrameOverlay();
             if (shouldEmitFirstFrame) {
                 emitFirstFrameRenderedIfNeeded();
             }
+        }
+    }
+
+    public void setPreserveLastFrame(boolean preserveLastFrame) {
+        this.preserveLastFrame = preserveLastFrame;
+        if (preserveLastFrame) {
+            maybeShowLastFrameOverlay();
+        } else {
+            removeLastFrameOverlay();
         }
     }
 
@@ -918,6 +1029,11 @@ public class WebRTCView extends ViewGroup {
             }
 
             this.streamURL = streamURL;
+            if (streamURL == null) {
+                removeLastFrameOverlay();
+            } else {
+                maybeShowLastFrameOverlay();
+            }
 
             // After realizing/applying the change in the value of
             // this.streamURL, reflect it on the value of videoTrack.

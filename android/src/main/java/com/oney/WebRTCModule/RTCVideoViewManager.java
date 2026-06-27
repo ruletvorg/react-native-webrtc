@@ -76,6 +76,11 @@ public class RTCVideoViewManager extends SimpleViewManager<WebRTCView> {
         view.setNoanimation(noanimation);
     }
 
+    @ReactProp(name = "preserveLastFrame", defaultBoolean = false)
+    public void setPreserveLastFrame(WebRTCView view, boolean preserveLastFrame) {
+        view.setPreserveLastFrame(preserveLastFrame);
+    }
+
     /**
      * Sets the z-order of a specific {@link WebRTCView} in the stacking space of
      * all {@code WebRTCView}s. For more details, refer to the documentation of

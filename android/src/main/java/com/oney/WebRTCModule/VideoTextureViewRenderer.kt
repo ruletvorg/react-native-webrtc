@@ -70,8 +70,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var renderListenerAdded = false
     private var scalingType: ScalingType? = null
     private var resizeTransformPending = false
-    private var resizeTransformTargetGeneration = 0
-    private var suppressNextResizeTransform = false
     private val textureTransform = Matrix()
 
     init {
@@ -164,9 +162,9 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     fun layoutWithReadyBuffer(left: Int, top: Int, right: Int, bottom: Int, aspectRatio: Float) {
         ThreadUtils.checkIsOnMainThread()
-        suppressNextResizeTransform = true
         layout(left, top, right, bottom)
         setLayoutAspectRatio(aspectRatio)
+        updateTextureTransform()
     }
 
     fun prepareForLayoutSize(width: Int, height: Int): Int {
@@ -175,9 +173,11 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
         requestedSurfaceWidth = width
         requestedSurfaceHeight = height
+        updateTextureTransform()
 
         val currentSurfaceTexture = surfaceTexture ?: return activeEglSurfaceGeneration.get()
         configureSurfaceTextureSize(currentSurfaceTexture, width, height)
+        updateTextureTransform()
 
         if (released) {
             eglSurfaceWidth = width
@@ -200,9 +200,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
         surfaceGeneration++
         releaseEglSurface()
-        val targetGeneration = scheduleCreateEglSurface(currentSurfaceTexture)
-        resizeTransformTargetGeneration = targetGeneration
-        return targetGeneration
+        return scheduleCreateEglSurface(currentSurfaceTexture)
     }
 
     override fun onFrame(videoFrame: VideoFrame) {
@@ -226,22 +224,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         ThreadUtils.checkIsOnMainThread()
         val width = right - left
         val height = bottom - top
-        val previousWidth = layoutWidth
-        val previousHeight = layoutHeight
-        val sizeChanged = previousWidth > 0 &&
-            previousHeight > 0 &&
-            width > 0 &&
-            height > 0 &&
-            (previousWidth != width || previousHeight != height)
-
-        if (sizeChanged && !suppressNextResizeTransform) {
-            holdPreviousTextureAspect(previousWidth, previousHeight, width, height)
-        } else if (width <= 0 || height <= 0) {
-            clearResizeTransform()
-        } else if (suppressNextResizeTransform) {
-            clearResizeTransform()
-        }
-        suppressNextResizeTransform = false
 
         layoutWidth = width
         layoutHeight = height
@@ -251,6 +233,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         } else {
             eglRenderer.setLayoutAspectRatio(0f)
         }
+        updateTextureTransform()
     }
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
@@ -261,6 +244,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             eglSurfaceWidth = targetWidth
             eglSurfaceHeight = targetHeight
             configureSurfaceTextureSize(surfaceTexture, targetWidth, targetHeight)
+            updateTextureTransform()
         }
         scheduleCreateEglSurface(surfaceTexture)
     }
@@ -277,6 +261,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
         if (targetWidth > 0 && targetHeight > 0) {
             configureSurfaceTextureSize(surfaceTexture, targetWidth, targetHeight)
+            updateTextureTransform()
             return
         }
 
@@ -354,38 +339,49 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private fun notifyTextureUpdated() {
         uiThreadHandler.post {
             if (!released) {
-                if (
-                    !resizeTransformPending ||
-                    resizeTransformTargetGeneration <= 0 ||
-                    isGenerationDrawn(resizeTransformTargetGeneration)
-                ) {
-                    clearResizeTransform()
-                }
+                updateTextureTransform()
                 textureUpdatedListener?.run()
             }
         }
     }
 
-    private fun holdPreviousTextureAspect(
-        previousWidth: Int,
-        previousHeight: Int,
-        width: Int,
-        height: Int,
-    ) {
-        val widthScale = width / previousWidth.toFloat()
-        val heightScale = height / previousHeight.toFloat()
+    private fun updateTextureTransform() {
+        if (layoutWidth <= 0 || layoutHeight <= 0) {
+            clearResizeTransform()
+            return
+        }
+
+        val sourceWidth = requestedSurfaceWidth.takeIf { it > 0 } ?: eglSurfaceWidth
+        val sourceHeight = requestedSurfaceHeight.takeIf { it > 0 } ?: eglSurfaceHeight
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            clearResizeTransform()
+            return
+        }
+
+        val widthScale = layoutWidth / sourceWidth.toFloat()
+        val heightScale = layoutHeight / sourceHeight.toFloat()
         val scale = if (scalingType == ScalingType.SCALE_ASPECT_FIT) {
             minOf(widthScale, heightScale)
         } else {
             maxOf(widthScale, heightScale)
         }
+        val transformScaleX = scale / widthScale
+        val transformScaleY = scale / heightScale
+
+        if (
+            kotlin.math.abs(transformScaleX - 1f) < 0.001f &&
+            kotlin.math.abs(transformScaleY - 1f) < 0.001f
+        ) {
+            clearResizeTransform()
+            return
+        }
 
         textureTransform.reset()
         textureTransform.setScale(
-            scale / widthScale,
-            scale / heightScale,
-            width / 2f,
-            height / 2f,
+            transformScaleX,
+            transformScaleY,
+            layoutWidth / 2f,
+            layoutHeight / 2f,
         )
         resizeTransformPending = true
         setTransform(textureTransform)
@@ -396,7 +392,6 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
         textureTransform.reset()
         resizeTransformPending = false
-        resizeTransformTargetGeneration = 0
         setTransform(textureTransform)
     }
 

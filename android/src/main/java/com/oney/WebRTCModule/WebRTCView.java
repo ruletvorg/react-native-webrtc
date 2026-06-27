@@ -195,6 +195,7 @@ public class WebRTCView extends ViewGroup {
     private int textureStartupRight;
     private int textureStartupTop;
     private int textureBlackOverlayGeneration;
+    private int textureStartupFadeGeneration;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -391,7 +392,7 @@ public class WebRTCView extends ViewGroup {
         post(() -> {
             Log.d(TAG, "First frame rendered.");
             setSurfaceRendererBackgroundColor(Color.TRANSPARENT);
-            if (noanimation || textureViewRenderer == null || (!textureStartupOverlayActive && !textureStartupOverlayFading)) {
+            if (noanimation || textureViewRenderer == null || !isTextureStartupOverlayOwned()) {
                 textureFirstFrameWaitingForStartup = false;
                 emitFirstFrameRenderedIfNeeded();
             } else {
@@ -600,14 +601,7 @@ public class WebRTCView extends ViewGroup {
             return;
         }
 
-        textureStartupFadePending = false;
-        textureStartupOverlayActive = false;
-        textureStartupOverlayFading = true;
-        fadeOutTextureResizeBlackOverlay(() -> {
-            textureStartupOverlayFading = false;
-            textureFirstFrameWaitingForStartup = false;
-            emitFirstFrameRenderedIfNeeded();
-        });
+        finishTextureStartupFade();
     }
 
     private void onPendingTextureFrameRendered() {
@@ -752,7 +746,24 @@ public class WebRTCView extends ViewGroup {
         textureStartupTop = 0;
         textureStartupRight = 0;
         textureStartupBottom = 0;
+        textureViewRenderer.animate().cancel();
+        textureViewRenderer.setAlpha(0f);
+        scheduleTextureStartupFadeHardTimeout();
         maybeShowTextureStartupBlackOverlay();
+    }
+
+    private void scheduleTextureStartupFadeHardTimeout() {
+        final int generation = ++textureStartupFadeGeneration;
+
+        postDelayed(() -> {
+            if (generation != textureStartupFadeGeneration
+                    || textureViewRenderer == null
+                    || !textureStartupFadePending) {
+                return;
+            }
+
+            finishTextureStartupFade();
+        }, TEXTURE_BLACK_OVERLAY_HARD_TIMEOUT_MS);
     }
 
     private void maybeShowTextureStartupBlackOverlay() {
@@ -779,10 +790,71 @@ public class WebRTCView extends ViewGroup {
         textureStartupTop = top;
         textureStartupRight = right;
         textureStartupBottom = bottom;
-        showTextureResizeBlackOverlay(left, top, right, bottom);
+    }
+
+    private void finishTextureStartupFade() {
+        if (textureViewRenderer == null) {
+            resetTextureStartupFade(false);
+            emitFirstFrameRenderedIfNeeded();
+            return;
+        }
+
+        textureStartupFadePending = false;
+        textureStartupOverlayActive = false;
+        textureStartupOverlayFading = true;
+        fadeInTextureStartupRenderer(() -> {
+            textureStartupOverlayFading = false;
+            textureFirstFrameWaitingForStartup = false;
+            emitFirstFrameRenderedIfNeeded();
+        });
+    }
+
+    private void fadeInTextureStartupRenderer(Runnable onEnd) {
+        if (textureViewRenderer == null) {
+            if (onEnd != null) {
+                onEnd.run();
+            }
+            return;
+        }
+
+        if (noanimation) {
+            textureViewRenderer.animate().cancel();
+            textureViewRenderer.setAlpha(1f);
+            if (onEnd != null) {
+                onEnd.run();
+            }
+            return;
+        }
+
+        final VideoTextureViewRenderer renderer = textureViewRenderer;
+        renderer.animate().cancel();
+        renderer.animate()
+                .alpha(1f)
+                .setDuration(TEXTURE_RESIZE_BLACK_FADE_OUT_MS)
+                .setListener(new AnimatorListenerAdapter() {
+                    private boolean canceled;
+
+                    @Override
+                    public void onAnimationCancel(Animator animation) {
+                        canceled = true;
+                    }
+
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        renderer.animate().setListener(null);
+                        if (!canceled && textureViewRenderer == renderer) {
+                            renderer.setAlpha(1f);
+                        }
+                        if (!canceled && onEnd != null) {
+                            onEnd.run();
+                        }
+                    }
+                })
+                .start();
     }
 
     private void resetTextureStartupFade(boolean removeOverlay) {
+        textureStartupFadeGeneration++;
         textureStartupFadePending = false;
         textureStartupOverlayActive = false;
         textureStartupOverlayFading = false;
@@ -794,6 +866,11 @@ public class WebRTCView extends ViewGroup {
         textureStartupBottom = 0;
         if (removeOverlay) {
             removeTextureResizeBlackOverlay();
+        }
+        if (textureViewRenderer != null) {
+            textureViewRenderer.animate().cancel();
+            textureViewRenderer.animate().setListener(null);
+            textureViewRenderer.setAlpha(1f);
         }
     }
 

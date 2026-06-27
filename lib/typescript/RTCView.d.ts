@@ -71,6 +71,13 @@ interface RTCVideoViewProps extends ViewProps {
      * androidRenderer: 'surface' | 'texture'
      */
     androidRenderer?: 'surface' | 'texture';
+    /**
+     * Android-only. Disables the native black overlay animation used by the
+     * TextureView renderer while it waits for stabilized frames.
+     *
+     * noanimation: boolean
+     */
+    noanimation?: boolean;
 }
 declare const _default: import("react-native").HostComponent<RTCVideoViewProps>;
 export default _default;

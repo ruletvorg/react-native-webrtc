@@ -177,6 +177,7 @@ public class WebRTCView extends ViewGroup {
     private VideoTextureViewRenderer pendingTextureViewRenderer;
     private boolean pendingTextureRendererAttached;
     private boolean pendingTextureRendererInitialized;
+    private boolean noanimation;
     private boolean hasPendingTextureLayout;
     private int pendingTextureBottom;
     private int pendingTextureLeft;
@@ -803,6 +804,10 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void showTextureResizeBlackOverlay(int left, int top, int right, int bottom) {
+        if (noanimation) {
+            return;
+        }
+
         boolean createdOverlay = textureResizeBlackOverlayView == null;
         if (textureResizeBlackOverlayView == null) {
             textureResizeBlackOverlayView = new View(getContext());
@@ -862,6 +867,14 @@ public class WebRTCView extends ViewGroup {
 
     private void fadeOutTextureResizeBlackOverlay(Runnable onEnd) {
         if (textureResizeBlackOverlayView == null) {
+            if (onEnd != null) {
+                onEnd.run();
+            }
+            return;
+        }
+
+        if (noanimation) {
+            removeTextureResizeBlackOverlay();
             if (onEnd != null) {
                 onEnd.run();
             }
@@ -1050,6 +1063,13 @@ public class WebRTCView extends ViewGroup {
                 : RendererType.SURFACE;
 
         replaceRenderer(nextRendererType);
+    }
+
+    public void setNoanimation(boolean noanimation) {
+        this.noanimation = noanimation;
+        if (noanimation) {
+            removeTextureResizeBlackOverlay();
+        }
     }
 
     /**

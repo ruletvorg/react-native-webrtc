@@ -71,6 +71,11 @@ public class RTCVideoViewManager extends SimpleViewManager<WebRTCView> {
         view.setAndroidRenderer(androidRenderer);
     }
 
+    @ReactProp(name = "noanimation", defaultBoolean = false)
+    public void setNoanimation(WebRTCView view, boolean noanimation) {
+        view.setNoanimation(noanimation);
+    }
+
     /**
      * Sets the z-order of a specific {@link WebRTCView} in the stacking space of
      * all {@code WebRTCView}s. For more details, refer to the documentation of

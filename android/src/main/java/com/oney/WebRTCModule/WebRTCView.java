@@ -56,8 +56,8 @@ public class WebRTCView extends ViewGroup {
      */
     private static final ScalingType DEFAULT_SCALING_TYPE = ScalingType.SCALE_ASPECT_FIT;
 
-    private static final int TEXTURE_STARTUP_STABILIZATION_FRAMES = 2;
-    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 2;
+    private static final int TEXTURE_STARTUP_STABILIZATION_FRAMES = 1;
+    private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 1;
     private static final long TEXTURE_FADE_IN_MS = 160;
     private static final long TEXTURE_FADE_HARD_TIMEOUT_MS = 1000;
     private static final String FIRST_FRAME_RENDERED_EVENT = "topFirstFrameRendered";

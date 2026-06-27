@@ -21,6 +21,7 @@ import org.webrtc.RendererCommon.VideoLayoutMeasure
 import org.webrtc.ThreadUtils
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.CountDownLatch
 
 /**
@@ -40,7 +41,9 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private val videoLayoutMeasure = VideoLayoutMeasure()
     private val eglRenderer: EglRenderer = EglRenderer(resourceName)
     private val uiThreadHandler = Handler(Looper.getMainLooper())
+    private val renderedFrameCount = AtomicLong(0)
     private val renderListener = EglRenderer.RenderListener {
+        renderedFrameCount.incrementAndGet()
         notifyFrameRendered()
     }
 
@@ -95,6 +98,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         rotatedFrameWidth = 0
         rotatedFrameHeight = 0
         frameRotation = 0
+        renderedFrameCount.set(0)
         layoutWidth = 0
         layoutHeight = 0
         clearResizeTransform()
@@ -128,6 +132,8 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     fun setLayoutAspectRatio(aspectRatio: Float) {
         eglRenderer.setLayoutAspectRatio(aspectRatio)
     }
+
+    fun getRenderedFrameCount(): Long = renderedFrameCount.get()
 
     override fun onFrame(videoFrame: VideoFrame) {
         if (released) return

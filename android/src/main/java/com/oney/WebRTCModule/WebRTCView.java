@@ -179,6 +179,7 @@ public class WebRTCView extends ViewGroup {
     private ImageView lastFrameOverlayView;
     private ImageView resizeSnapshotOverlayView;
     private boolean textureResizeSnapshotPending;
+    private long textureResizeSnapshotStartFrame;
     private boolean textureResizeFadePending;
     private int textureResizeFramesUntilFade;
     private boolean textureStartupFadePending;
@@ -554,7 +555,13 @@ public class WebRTCView extends ViewGroup {
         resetTextureStartupFade(false);
         if (noanimation) {
             resetTextureResizeFade();
-            armTextureResizeSnapshot(targetLeft, targetTop, targetRight, targetBottom);
+            boolean snapshotArmed = armTextureResizeSnapshot(targetLeft, targetTop, targetRight, targetBottom);
+            rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
+            textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+            if (snapshotArmed) {
+                textureResizeSnapshotStartFrame = textureViewRenderer.getRenderedFrameCount();
+            }
+            return;
         } else {
             resetTextureResizeSnapshot();
             armTextureResizeFade();
@@ -565,6 +572,10 @@ public class WebRTCView extends ViewGroup {
 
     private void onTextureFrameRendered() {
         if (textureResizeSnapshotPending) {
+            if (textureViewRenderer != null
+                    && textureViewRenderer.getRenderedFrameCount() <= textureResizeSnapshotStartFrame) {
+                return;
+            }
             finishTextureResizeSnapshot();
             return;
         }
@@ -722,20 +733,21 @@ public class WebRTCView extends ViewGroup {
                 : ImageView.ScaleType.CENTER_CROP;
     }
 
-    private void armTextureResizeSnapshot(int left, int top, int right, int bottom) {
-        if (textureViewRenderer == null || right <= left || bottom <= top) return;
-        if (textureViewRenderer.getWidth() <= 0 || textureViewRenderer.getHeight() <= 0) return;
+    private boolean armTextureResizeSnapshot(int left, int top, int right, int bottom) {
+        textureResizeSnapshotStartFrame = 0;
+        if (textureViewRenderer == null || right <= left || bottom <= top) return false;
+        if (textureViewRenderer.getWidth() <= 0 || textureViewRenderer.getHeight() <= 0) return false;
 
         Bitmap bitmap;
         try {
             bitmap = textureViewRenderer.getBitmap();
         } catch (Throwable tr) {
             Log.w(TAG, "Failed to capture TextureView resize snapshot.", tr);
-            return;
+            return false;
         }
 
         if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
-            return;
+            return false;
         }
 
         removeResizeSnapshotOverlay();
@@ -757,6 +769,7 @@ public class WebRTCView extends ViewGroup {
         textureViewRenderer.animate().setListener(null);
         textureViewRenderer.setAlpha(0f);
         scheduleTextureResizeSnapshotHardTimeout();
+        return true;
     }
 
     private void scheduleTextureResizeSnapshotHardTimeout() {
@@ -774,6 +787,7 @@ public class WebRTCView extends ViewGroup {
     private void finishTextureResizeSnapshot() {
         textureResizeSnapshotGeneration++;
         textureResizeSnapshotPending = false;
+        textureResizeSnapshotStartFrame = 0;
         removeResizeSnapshotOverlay();
 
         if (textureViewRenderer != null && noanimation) {
@@ -786,6 +800,7 @@ public class WebRTCView extends ViewGroup {
     private void resetTextureResizeSnapshot() {
         textureResizeSnapshotGeneration++;
         textureResizeSnapshotPending = false;
+        textureResizeSnapshotStartFrame = 0;
         removeResizeSnapshotOverlay();
 
         if (textureViewRenderer != null && noanimation) {

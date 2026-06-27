@@ -206,7 +206,7 @@ public class WebRTCView extends ViewGroup {
     public WebRTCView(Context context) {
         super(context);
 
-        createRenderer(RendererType.SURFACE);
+        createRenderer(RendererType.TEXTURE);
 
         setMirror(false);
         setScalingType(DEFAULT_SCALING_TYPE);

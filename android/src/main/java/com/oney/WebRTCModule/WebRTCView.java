@@ -546,6 +546,7 @@ public class WebRTCView extends ViewGroup {
         boolean isResizing = hasCurrentLayout && (targetWidth != currentWidth || targetHeight != currentHeight);
 
         if (!isResizing) {
+            textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
             markTextureStartupLayoutReady();
@@ -556,6 +557,7 @@ public class WebRTCView extends ViewGroup {
         if (noanimation) {
             resetTextureResizeFade();
             boolean snapshotArmed = armTextureResizeSnapshot(targetLeft, targetTop, targetRight, targetBottom);
+            textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
             if (snapshotArmed) {
@@ -566,6 +568,7 @@ public class WebRTCView extends ViewGroup {
             resetTextureResizeSnapshot();
             armTextureResizeFade();
         }
+        textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
         rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
         textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
     }

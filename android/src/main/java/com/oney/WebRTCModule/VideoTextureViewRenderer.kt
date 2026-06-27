@@ -57,6 +57,8 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var layoutHeight = 0
     private var released = true
     private var hasEglSurface = false
+    private var eglSurfaceWidth = 0
+    private var eglSurfaceHeight = 0
     private var surfaceGeneration = 0
     private var renderListenerAdded = false
     private var scalingType: ScalingType? = null
@@ -94,6 +96,8 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         releaseEglSurface()
         released = true
         hasEglSurface = false
+        eglSurfaceWidth = 0
+        eglSurfaceHeight = 0
         isFirstFrameRendered = false
         rotatedFrameWidth = 0
         rotatedFrameHeight = 0
@@ -134,6 +138,38 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     }
 
     fun getRenderedFrameCount(): Long = renderedFrameCount.get()
+
+    fun prepareForLayoutSize(width: Int, height: Int) {
+        ThreadUtils.checkIsOnMainThread()
+        if (width <= 0 || height <= 0) return
+
+        val currentSurfaceTexture = surfaceTexture ?: return
+        configureSurfaceTextureSize(currentSurfaceTexture, width, height)
+
+        if (released) {
+            eglSurfaceWidth = width
+            eglSurfaceHeight = height
+            return
+        }
+
+        val sizeChanged = eglSurfaceWidth > 0 &&
+            eglSurfaceHeight > 0 &&
+            (eglSurfaceWidth != width || eglSurfaceHeight != height)
+
+        eglSurfaceWidth = width
+        eglSurfaceHeight = height
+
+        if (!hasEglSurface) {
+            scheduleCreateEglSurface(currentSurfaceTexture)
+            return
+        }
+
+        if (!sizeChanged) return
+
+        surfaceGeneration++
+        releaseEglSurface()
+        scheduleCreateEglSurface(currentSurfaceTexture)
+    }
 
     override fun onFrame(videoFrame: VideoFrame) {
         if (released) return
@@ -181,6 +217,11 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     }
 
     override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        if (width > 0 && height > 0) {
+            eglSurfaceWidth = width
+            eglSurfaceHeight = height
+            configureSurfaceTextureSize(surfaceTexture, width, height)
+        }
         scheduleCreateEglSurface(surfaceTexture)
     }
 
@@ -190,7 +231,9 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         return true
     }
 
-    override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) = Unit
+    override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+        prepareForLayoutSize(width, height)
+    }
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) = Unit
 
@@ -223,6 +266,18 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
         eglRenderer.createEglSurface(surfaceTexture)
         hasEglSurface = true
+    }
+
+    private fun configureSurfaceTextureSize(
+        surfaceTexture: SurfaceTexture,
+        width: Int,
+        height: Int,
+    ) {
+        try {
+            surfaceTexture.setDefaultBufferSize(width, height)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to set TextureView buffer size.", t)
+        }
     }
 
     private fun releaseEglSurface() {

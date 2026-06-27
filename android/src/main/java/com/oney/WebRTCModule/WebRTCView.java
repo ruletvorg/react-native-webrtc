@@ -180,6 +180,11 @@ public class WebRTCView extends ViewGroup {
     private ImageView resizeSnapshotOverlayView;
     private boolean textureResizeSnapshotPending;
     private int textureResizeTargetGeneration;
+    private boolean textureResizeLayoutPending;
+    private int textureResizeLayoutBottom;
+    private int textureResizeLayoutLeft;
+    private int textureResizeLayoutRight;
+    private int textureResizeLayoutTop;
     private boolean textureResizeFadePending;
     private int textureResizeFramesUntilFade;
     private boolean textureStartupFadePending;
@@ -533,6 +538,7 @@ public class WebRTCView extends ViewGroup {
         if (targetWidth <= 0 || targetHeight <= 0) {
             resetTextureResizeSnapshot();
             resetTextureResizeFade();
+            clearPendingTextureResizeLayout();
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(0f);
             markTextureStartupLayoutReady();
@@ -546,6 +552,7 @@ public class WebRTCView extends ViewGroup {
         boolean isResizing = hasCurrentLayout && (targetWidth != currentWidth || targetHeight != currentHeight);
 
         if (!isResizing) {
+            clearPendingTextureResizeLayout();
             textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
             rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
@@ -558,10 +565,12 @@ public class WebRTCView extends ViewGroup {
             resetTextureResizeFade();
             boolean snapshotArmed = armTextureResizeSnapshot(targetLeft, targetTop, targetRight, targetBottom);
             int targetGeneration = textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
-            rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
             textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+            setPendingTextureResizeLayout(targetLeft, targetTop, targetRight, targetBottom);
             if (snapshotArmed) {
                 textureResizeTargetGeneration = targetGeneration;
+            } else {
+                armTextureResizeWaitOnly(targetGeneration);
             }
             return;
         } else {
@@ -569,8 +578,8 @@ public class WebRTCView extends ViewGroup {
             armTextureResizeFade();
         }
         textureResizeTargetGeneration = textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
-        rendererView.layout(targetLeft, targetTop, targetRight, targetBottom);
         textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+        setPendingTextureResizeLayout(targetLeft, targetTop, targetRight, targetBottom);
     }
 
     private void onTextureUpdated() {
@@ -578,6 +587,7 @@ public class WebRTCView extends ViewGroup {
             if (!isTextureResizeTargetUpdated()) {
                 return;
             }
+            applyPendingTextureResizeLayout();
             finishTextureResizeSnapshot();
             return;
         }
@@ -586,6 +596,7 @@ public class WebRTCView extends ViewGroup {
             if (!isTextureResizeTargetUpdated()) {
                 return;
             }
+            applyPendingTextureResizeLayout();
             textureResizeFramesUntilFade--;
             if (textureResizeFramesUntilFade <= 0) {
                 finishTextureResizeFade();
@@ -610,7 +621,42 @@ public class WebRTCView extends ViewGroup {
     private boolean isTextureResizeTargetUpdated() {
         return textureViewRenderer == null
                 || textureResizeTargetGeneration <= 0
-                || textureViewRenderer.getLastTextureUpdateGeneration() >= textureResizeTargetGeneration;
+                || textureViewRenderer.isGenerationDrawn(textureResizeTargetGeneration);
+    }
+
+    private void setPendingTextureResizeLayout(int left, int top, int right, int bottom) {
+        textureResizeLayoutPending = true;
+        textureResizeLayoutLeft = left;
+        textureResizeLayoutTop = top;
+        textureResizeLayoutRight = right;
+        textureResizeLayoutBottom = bottom;
+    }
+
+    private void applyPendingTextureResizeLayout() {
+        if (!textureResizeLayoutPending || textureViewRenderer == null) return;
+
+        int width = textureResizeLayoutRight - textureResizeLayoutLeft;
+        int height = textureResizeLayoutBottom - textureResizeLayoutTop;
+        if (width <= 0 || height <= 0) {
+            clearPendingTextureResizeLayout();
+            return;
+        }
+
+        textureResizeLayoutPending = false;
+        textureViewRenderer.layoutWithReadyBuffer(
+                textureResizeLayoutLeft,
+                textureResizeLayoutTop,
+                textureResizeLayoutRight,
+                textureResizeLayoutBottom,
+                width / (float) height);
+    }
+
+    private void clearPendingTextureResizeLayout() {
+        textureResizeLayoutPending = false;
+        textureResizeLayoutLeft = 0;
+        textureResizeLayoutTop = 0;
+        textureResizeLayoutRight = 0;
+        textureResizeLayoutBottom = 0;
     }
 
     /**
@@ -746,6 +792,7 @@ public class WebRTCView extends ViewGroup {
 
     private boolean armTextureResizeSnapshot(int left, int top, int right, int bottom) {
         textureResizeTargetGeneration = 0;
+        clearPendingTextureResizeLayout();
         if (textureViewRenderer == null || right <= left || bottom <= top) return false;
         if (textureViewRenderer.getWidth() <= 0 || textureViewRenderer.getHeight() <= 0) return false;
 
@@ -783,11 +830,23 @@ public class WebRTCView extends ViewGroup {
         return true;
     }
 
+    private void armTextureResizeWaitOnly(int targetGeneration) {
+        textureResizeTargetGeneration = targetGeneration;
+        textureResizeSnapshotPending = true;
+        textureResizeSnapshotGeneration++;
+        scheduleTextureResizeSnapshotHardTimeout();
+    }
+
     private void scheduleTextureResizeSnapshotHardTimeout() {
         final int generation = textureResizeSnapshotGeneration;
 
         postDelayed(() -> {
             if (generation != textureResizeSnapshotGeneration || !textureResizeSnapshotPending) {
+                return;
+            }
+
+            if (textureResizeLayoutPending && !isTextureResizeTargetUpdated()) {
+                scheduleTextureResizeSnapshotHardTimeout();
                 return;
             }
 
@@ -799,6 +858,7 @@ public class WebRTCView extends ViewGroup {
         textureResizeSnapshotGeneration++;
         textureResizeSnapshotPending = false;
         textureResizeTargetGeneration = 0;
+        applyPendingTextureResizeLayout();
         removeResizeSnapshotOverlay();
 
         if (textureViewRenderer != null && noanimation) {
@@ -812,6 +872,7 @@ public class WebRTCView extends ViewGroup {
         textureResizeSnapshotGeneration++;
         textureResizeSnapshotPending = false;
         textureResizeTargetGeneration = 0;
+        clearPendingTextureResizeLayout();
         removeResizeSnapshotOverlay();
 
         if (textureViewRenderer != null && noanimation) {
@@ -860,6 +921,11 @@ public class WebRTCView extends ViewGroup {
                 return;
             }
 
+            if (textureResizeLayoutPending && !isTextureResizeTargetUpdated()) {
+                scheduleTextureResizeFadeHardTimeout();
+                return;
+            }
+
             finishTextureResizeFade();
         }, TEXTURE_FADE_HARD_TIMEOUT_MS);
     }
@@ -873,6 +939,7 @@ public class WebRTCView extends ViewGroup {
         textureResizeFadePending = false;
         textureResizeTargetGeneration = 0;
         textureResizeFramesUntilFade = 0;
+        applyPendingTextureResizeLayout();
         fadeInTextureRenderer(null);
     }
 
@@ -881,6 +948,7 @@ public class WebRTCView extends ViewGroup {
         textureResizeFadePending = false;
         textureResizeTargetGeneration = 0;
         textureResizeFramesUntilFade = 0;
+        clearPendingTextureResizeLayout();
     }
 
     private boolean isTextureStartupOverlayOwned() {

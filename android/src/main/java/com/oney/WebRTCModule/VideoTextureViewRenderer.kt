@@ -22,6 +22,7 @@ import org.webrtc.ThreadUtils
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * TextureView-based WebRTC renderer for layouts that need Android clipping,
@@ -40,6 +41,16 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private val videoLayoutMeasure = VideoLayoutMeasure()
     private val eglRenderer: EglRenderer = EglRenderer(resourceName)
     private val uiThreadHandler = Handler(Looper.getMainLooper())
+    private val activeEglSurfaceGeneration = AtomicInteger(0)
+    private val lastRenderedGeneration = AtomicInteger(0)
+    private val lastTextureUpdateGeneration = AtomicInteger(0)
+    private val renderListener = EglRenderer.RenderListener {
+        val generation = activeEglSurfaceGeneration.get()
+        if (generation > 0) {
+            lastRenderedGeneration.set(generation)
+            notifyTextureUpdated()
+        }
+    }
 
     private var rendererEvents: RendererEvents? = null
     private var textureUpdatedListener: Runnable? = null
@@ -54,11 +65,11 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var eglSurfaceWidth = 0
     private var eglSurfaceHeight = 0
     private var surfaceGeneration = 0
-    private var activeEglSurfaceGeneration = 0
-    private var lastTextureUpdateGeneration = 0
+    private var renderListenerAdded = false
     private var scalingType: ScalingType? = null
     private var resizeTransformPending = false
     private var resizeTransformTargetGeneration = 0
+    private var suppressNextResizeTransform = false
     private val textureTransform = Matrix()
 
     init {
@@ -76,6 +87,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         released = false
         this.rendererEvents = rendererEvents
         eglRenderer.init(sharedContext, EglBase.CONFIG_PLAIN, GlRectDrawer())
+        if (!renderListenerAdded) {
+            eglRenderer.addRenderListener(renderListener)
+            renderListenerAdded = true
+        }
         if (isAvailable) {
             scheduleCreateEglSurface(surfaceTexture)
         }
@@ -90,8 +105,9 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         hasEglSurface = false
         eglSurfaceWidth = 0
         eglSurfaceHeight = 0
-        activeEglSurfaceGeneration = 0
-        lastTextureUpdateGeneration = 0
+        activeEglSurfaceGeneration.set(0)
+        lastRenderedGeneration.set(0)
+        lastTextureUpdateGeneration.set(0)
         isFirstFrameRendered = false
         rotatedFrameWidth = 0
         rotatedFrameHeight = 0
@@ -101,6 +117,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         clearResizeTransform()
         rendererEvents = null
         eglRenderer.release()
+        renderListenerAdded = false
     }
 
     fun clearImage() {
@@ -129,19 +146,31 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         eglRenderer.setLayoutAspectRatio(aspectRatio)
     }
 
-    fun getLastTextureUpdateGeneration(): Int = lastTextureUpdateGeneration
+    fun isGenerationDrawn(generation: Int): Boolean {
+        if (generation <= 0) return true
+
+        return lastRenderedGeneration.get() >= generation &&
+            lastTextureUpdateGeneration.get() >= generation
+    }
+
+    fun layoutWithReadyBuffer(left: Int, top: Int, right: Int, bottom: Int, aspectRatio: Float) {
+        ThreadUtils.checkIsOnMainThread()
+        suppressNextResizeTransform = true
+        layout(left, top, right, bottom)
+        setLayoutAspectRatio(aspectRatio)
+    }
 
     fun prepareForLayoutSize(width: Int, height: Int): Int {
         ThreadUtils.checkIsOnMainThread()
-        if (width <= 0 || height <= 0) return activeEglSurfaceGeneration
+        if (width <= 0 || height <= 0) return activeEglSurfaceGeneration.get()
 
-        val currentSurfaceTexture = surfaceTexture ?: return activeEglSurfaceGeneration
+        val currentSurfaceTexture = surfaceTexture ?: return activeEglSurfaceGeneration.get()
         configureSurfaceTextureSize(currentSurfaceTexture, width, height)
 
         if (released) {
             eglSurfaceWidth = width
             eglSurfaceHeight = height
-            return activeEglSurfaceGeneration
+            return activeEglSurfaceGeneration.get()
         }
 
         val sizeChanged = eglSurfaceWidth > 0 &&
@@ -155,7 +184,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             return scheduleCreateEglSurface(currentSurfaceTexture)
         }
 
-        if (!sizeChanged) return activeEglSurfaceGeneration
+        if (!sizeChanged) return activeEglSurfaceGeneration.get()
 
         surfaceGeneration++
         releaseEglSurface()
@@ -193,11 +222,14 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             height > 0 &&
             (previousWidth != width || previousHeight != height)
 
-        if (sizeChanged) {
+        if (sizeChanged && !suppressNextResizeTransform) {
             holdPreviousTextureAspect(previousWidth, previousHeight, width, height)
         } else if (width <= 0 || height <= 0) {
             clearResizeTransform()
+        } else if (suppressNextResizeTransform) {
+            clearResizeTransform()
         }
+        suppressNextResizeTransform = false
 
         layoutWidth = width
         layoutHeight = height
@@ -229,8 +261,9 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     }
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
-        if (activeEglSurfaceGeneration > 0) {
-            lastTextureUpdateGeneration = activeEglSurfaceGeneration
+        val generation = activeEglSurfaceGeneration.get()
+        if (generation > 0) {
+            lastTextureUpdateGeneration.set(generation)
         }
         notifyTextureUpdated()
     }
@@ -242,7 +275,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     }
 
     private fun scheduleCreateEglSurface(surfaceTexture: SurfaceTexture?): Int {
-        if (released || hasEglSurface || surfaceTexture == null) return activeEglSurfaceGeneration
+        if (released || hasEglSurface || surfaceTexture == null) return activeEglSurfaceGeneration.get()
 
         val generation = ++surfaceGeneration
         uiThreadHandler.post {
@@ -264,7 +297,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         }
 
         eglRenderer.createEglSurface(surfaceTexture)
-        activeEglSurfaceGeneration = generation
+        activeEglSurfaceGeneration.set(generation)
         hasEglSurface = true
     }
 
@@ -291,7 +324,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             Log.w(TAG, "Failed to release EGL surface.", t)
         } finally {
             hasEglSurface = false
-            activeEglSurfaceGeneration = 0
+            activeEglSurfaceGeneration.set(0)
         }
     }
 
@@ -301,7 +334,7 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
                 if (
                     !resizeTransformPending ||
                     resizeTransformTargetGeneration <= 0 ||
-                    lastTextureUpdateGeneration >= resizeTransformTargetGeneration
+                    isGenerationDrawn(resizeTransformTargetGeneration)
                 ) {
                     clearResizeTransform()
                 }

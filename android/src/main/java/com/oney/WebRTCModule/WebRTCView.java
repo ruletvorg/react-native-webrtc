@@ -58,6 +58,7 @@ public class WebRTCView extends ViewGroup {
 
     private static final int TEXTURE_STARTUP_STABILIZATION_FRAMES = 1;
     private static final int TEXTURE_RESIZE_STABILIZATION_FRAMES = 1;
+    private static final int TEXTURE_RESIZE_SWAP_STABILIZATION_FRAMES = 3;
     private static final long TEXTURE_FADE_IN_MS = 160;
     private static final long TEXTURE_FADE_HARD_TIMEOUT_MS = 1000;
     private static final String FIRST_FRAME_RENDERED_EVENT = "topFirstFrameRendered";
@@ -206,6 +207,8 @@ public class WebRTCView extends ViewGroup {
     private int textureResizeSwapLeft;
     private int textureResizeSwapRight;
     private int textureResizeSwapTop;
+    private boolean textureResizeSwapCovered;
+    private int textureResizeSwapFramesUntilReady;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -568,9 +571,9 @@ public class WebRTCView extends ViewGroup {
         }
 
         resetTextureStartupFade(false);
+        resetTextureResizeSnapshot();
+        resetTextureResizeFade();
         if (startTextureResizeSwap(targetLeft, targetTop, targetRight, targetBottom, targetAspectRatio)) {
-            resetTextureResizeSnapshot();
-            resetTextureResizeFade();
             return;
         }
 
@@ -704,6 +707,7 @@ public class WebRTCView extends ViewGroup {
         cancelTextureResizeSwap();
 
         final int generation = ++textureResizeSwapGeneration;
+        final boolean snapshotShown = showTextureResizeSnapshotOverlay(left, top, right, bottom);
         final VideoTextureViewRenderer nextRenderer = createTextureRenderer();
         nextRenderer.setAlpha(0f);
         nextRenderer.setTextureUpdatedListener(() -> onTextureResizeSwapUpdated(nextRenderer, generation));
@@ -723,12 +727,21 @@ public class WebRTCView extends ViewGroup {
         textureResizeSwapTop = top;
         textureResizeSwapRight = right;
         textureResizeSwapBottom = bottom;
+        textureResizeSwapCovered = snapshotShown;
+        textureResizeSwapFramesUntilReady = TEXTURE_RESIZE_SWAP_STABILIZATION_FRAMES;
 
         addView(nextRenderer);
         nextRenderer.layoutWithReadyBuffer(left, top, right, bottom, aspectRatio);
         nextRenderer.prepareForLayoutSize(width, height);
         nextRenderer.bringToFront();
+        if (snapshotShown) {
+            textureViewRenderer.animate().cancel();
+            textureViewRenderer.animate().setListener(null);
+            textureViewRenderer.setAlpha(0f);
+            layoutResizeSnapshotOverlay(left, top, right, bottom);
+        }
         addSinkToVideoTrack(textureResizeSwapTrack, nextRenderer);
+        scheduleTextureResizeSwapHardTimeout(generation);
         return true;
     }
 
@@ -738,6 +751,12 @@ public class WebRTCView extends ViewGroup {
         }
         if (!renderer.hasDrawnFrame()) {
             return;
+        }
+        if (textureResizeSwapFramesUntilReady > 0) {
+            textureResizeSwapFramesUntilReady--;
+            if (textureResizeSwapFramesUntilReady > 0) {
+                return;
+            }
         }
 
         finishTextureResizeSwap(renderer, generation);
@@ -758,6 +777,8 @@ public class WebRTCView extends ViewGroup {
         textureResizeSwapTop = 0;
         textureResizeSwapRight = 0;
         textureResizeSwapBottom = 0;
+        textureResizeSwapCovered = false;
+        textureResizeSwapFramesUntilReady = 0;
 
         textureViewRenderer = nextRenderer;
         rendererView = nextRenderer;
@@ -780,13 +801,13 @@ public class WebRTCView extends ViewGroup {
         resetTextureResizeSnapshot();
         resetTextureResizeFade();
         clearPendingTextureResizeLayout();
-        requestSurfaceViewRendererLayout();
     }
 
     private void cancelTextureResizeSwap() {
         textureResizeSwapGeneration++;
         final VideoTextureViewRenderer renderer = textureResizeSwapRenderer;
         final VideoTrack track = textureResizeSwapTrack;
+        final boolean covered = textureResizeSwapCovered;
 
         textureResizeSwapRenderer = null;
         textureResizeSwapTrack = null;
@@ -794,6 +815,17 @@ public class WebRTCView extends ViewGroup {
         textureResizeSwapTop = 0;
         textureResizeSwapRight = 0;
         textureResizeSwapBottom = 0;
+        textureResizeSwapCovered = false;
+        textureResizeSwapFramesUntilReady = 0;
+
+        if (covered) {
+            if (textureViewRenderer != null) {
+                textureViewRenderer.animate().cancel();
+                textureViewRenderer.animate().setListener(null);
+                textureViewRenderer.setAlpha(1f);
+            }
+            removeResizeSnapshotOverlay();
+        }
 
         if (renderer == null) return;
 
@@ -804,6 +836,15 @@ public class WebRTCView extends ViewGroup {
         renderer.release();
         surfaceViewRendererInstances--;
         removeView(renderer);
+    }
+
+    private void scheduleTextureResizeSwapHardTimeout(int generation) {
+        postDelayed(() -> {
+            if (generation != textureResizeSwapGeneration || textureResizeSwapRenderer == null) {
+                return;
+            }
+            cancelTextureResizeSwap();
+        }, TEXTURE_FADE_HARD_TIMEOUT_MS);
     }
 
     /**
@@ -960,27 +1001,14 @@ public class WebRTCView extends ViewGroup {
         if (textureViewRenderer == null || right <= left || bottom <= top) return false;
         if (textureViewRenderer.getWidth() <= 0 || textureViewRenderer.getHeight() <= 0) return false;
 
-        Bitmap bitmap;
-        try {
-            bitmap = textureViewRenderer.getBitmap();
-        } catch (Throwable tr) {
-            Log.w(TAG, "Failed to capture TextureView resize snapshot.", tr);
-            return false;
-        }
-
-        if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
+        Bitmap bitmap = captureTextureRendererBitmap("resize snapshot");
+        if (bitmap == null) {
             return false;
         }
 
         removeResizeSnapshotOverlay();
 
-        ImageView overlay = new ImageView(getContext());
-        overlay.setImageBitmap(bitmap);
-        overlay.setScaleType(getTextureOverlayScaleType());
-        overlay.setAlpha(1f);
-        overlay.setClickable(false);
-        overlay.setFocusable(false);
-
+        ImageView overlay = createTextureSnapshotOverlay(bitmap);
         resizeSnapshotOverlayView = overlay;
         textureResizeSnapshotPending = true;
         textureResizeSnapshotGeneration++;
@@ -992,6 +1020,51 @@ public class WebRTCView extends ViewGroup {
         textureViewRenderer.setAlpha(0f);
         scheduleTextureResizeSnapshotHardTimeout();
         return true;
+    }
+
+    private boolean showTextureResizeSnapshotOverlay(int left, int top, int right, int bottom) {
+        if (textureViewRenderer == null || right <= left || bottom <= top) return false;
+        if (textureViewRenderer.getWidth() <= 0 || textureViewRenderer.getHeight() <= 0) return false;
+
+        Bitmap bitmap = captureTextureRendererBitmap("resize swap snapshot");
+        if (bitmap == null) {
+            return false;
+        }
+
+        removeResizeSnapshotOverlay();
+
+        ImageView overlay = createTextureSnapshotOverlay(bitmap);
+        resizeSnapshotOverlayView = overlay;
+        addView(overlay);
+        layoutResizeSnapshotOverlay(left, top, right, bottom);
+        return true;
+    }
+
+    private Bitmap captureTextureRendererBitmap(String context) {
+        Bitmap bitmap;
+        try {
+            bitmap = textureViewRenderer.getBitmap();
+        } catch (Throwable tr) {
+            Log.w(TAG, "Failed to capture TextureView " + context + ".", tr);
+            return null;
+        }
+
+        if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
+            return null;
+        }
+
+        return bitmap;
+    }
+
+    private ImageView createTextureSnapshotOverlay(Bitmap bitmap) {
+        ImageView overlay = new ImageView(getContext());
+        overlay.setImageBitmap(bitmap);
+        overlay.setScaleType(getTextureOverlayScaleType());
+        overlay.setAlpha(1f);
+        overlay.setClickable(false);
+        overlay.setFocusable(false);
+
+        return overlay;
     }
 
     private void armTextureResizeWaitOnly(int targetGeneration) {

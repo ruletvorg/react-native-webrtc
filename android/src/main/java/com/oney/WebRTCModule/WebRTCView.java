@@ -213,6 +213,7 @@ public class WebRTCView extends ViewGroup {
     private boolean textureResizeSwapCovered;
     private int textureResizeSwapFramesUntilReady;
     private boolean textureResizeSwapHidPrevious;
+    private volatile boolean playerFirstFrameRendered;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -405,6 +406,7 @@ public class WebRTCView extends ViewGroup {
      * rendered) shines through.
      */
     private void onFirstFrameRendered() {
+        playerFirstFrameRendered = true;
         post(() -> {
             Log.d(TAG, "First frame rendered.");
             setSurfaceRendererBackgroundColor(Color.TRANSPARENT);
@@ -421,9 +423,14 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void resetFirstFrameRendered() {
+        playerFirstFrameRendered = false;
         synchronized (this) {
             firstFrameRendered = false;
         }
+    }
+
+    private boolean hasPlayerFirstFrameRendered() {
+        return playerFirstFrameRendered;
     }
 
     private void emitFirstFrameRenderedIfNeeded() {
@@ -594,6 +601,17 @@ public class WebRTCView extends ViewGroup {
         markTextureStartupLayoutReady();
 
         resetTextureStartupFade(false);
+        if (!hasPlayerFirstFrameRendered()) {
+            cancelTextureResizeSwap();
+            resetTextureResizeSnapshot();
+            resetTextureResizeFade();
+            textureViewRenderer.prepareForLayoutSize(targetWidth, targetHeight);
+            textureViewRenderer.setLayoutAspectRatio(targetAspectRatio);
+            textureViewRenderer.layoutWithReadyBuffer(0, 0, targetWidth, targetHeight, targetAspectRatio);
+            textureResizeTargetGeneration = 0;
+            return;
+        }
+
         if (startTextureResizeSwap(targetLeft, targetTop, targetRight, targetBottom, targetWidth, targetHeight, targetAspectRatio)) {
             resetTextureResizeFade();
             return;
@@ -725,6 +743,10 @@ public class WebRTCView extends ViewGroup {
             int height,
             float aspectRatio) {
         if (textureViewRenderer == null || videoTrack == null || !rendererAttached) {
+            return false;
+        }
+
+        if (!hasPlayerFirstFrameRendered()) {
             return false;
         }
 
@@ -1217,8 +1239,11 @@ public class WebRTCView extends ViewGroup {
 
     private void armTextureResizeFade() {
         if (textureViewRenderer == null) return;
-        if (noanimation) {
+        if (noanimation || !hasPlayerFirstFrameRendered()) {
             resetTextureResizeFade();
+            textureViewRenderer.animate().cancel();
+            textureViewRenderer.animate().setListener(null);
+            textureViewRenderer.setAlpha(1f);
             return;
         }
 
@@ -1275,7 +1300,7 @@ public class WebRTCView extends ViewGroup {
 
     private void armTextureStartupFade() {
         if (textureViewRenderer == null) return;
-        if (noanimation) {
+        if (noanimation || !hasPlayerFirstFrameRendered()) {
             resetTextureStartupFade(true);
             return;
         }
@@ -1422,7 +1447,7 @@ public class WebRTCView extends ViewGroup {
 
     private VideoTextureViewRenderer createTextureRenderer() {
         VideoTextureViewRenderer renderer = new VideoTextureViewRenderer(getContext());
-        if (!noanimation) {
+        if (!noanimation && hasPlayerFirstFrameRendered()) {
             renderer.setAlpha(0f);
         }
         renderer.setMirror(mirror);

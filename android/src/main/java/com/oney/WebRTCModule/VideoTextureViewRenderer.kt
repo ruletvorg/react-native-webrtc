@@ -66,6 +66,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
     private var eglSurfaceHeight = 0
     private var requestedSurfaceWidth = 0
     private var requestedSurfaceHeight = 0
+    private var displayedSurfaceWidth = 0
+    private var displayedSurfaceHeight = 0
+    private var pendingDisplayedSurfaceWidth = 0
+    private var pendingDisplayedSurfaceHeight = 0
     private var surfaceGeneration = 0
     private var renderListenerAdded = false
     private var scalingType: ScalingType? = null
@@ -107,6 +111,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         eglSurfaceHeight = 0
         requestedSurfaceWidth = 0
         requestedSurfaceHeight = 0
+        displayedSurfaceWidth = 0
+        displayedSurfaceHeight = 0
+        pendingDisplayedSurfaceWidth = 0
+        pendingDisplayedSurfaceHeight = 0
         activeEglSurfaceGeneration.set(0)
         lastRenderedGeneration.set(0)
         lastTextureUpdateGeneration.set(0)
@@ -173,6 +181,13 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
         requestedSurfaceWidth = width
         requestedSurfaceHeight = height
+        if (displayedSurfaceWidth <= 0 || displayedSurfaceHeight <= 0) {
+            displayedSurfaceWidth = width
+            displayedSurfaceHeight = height
+        } else if (displayedSurfaceWidth != width || displayedSurfaceHeight != height) {
+            pendingDisplayedSurfaceWidth = width
+            pendingDisplayedSurfaceHeight = height
+        }
         updateTextureTransform()
 
         val currentSurfaceTexture = surfaceTexture ?: return activeEglSurfaceGeneration.get()
@@ -243,6 +258,10 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         if (targetWidth > 0 && targetHeight > 0) {
             eglSurfaceWidth = targetWidth
             eglSurfaceHeight = targetHeight
+            if (displayedSurfaceWidth <= 0 || displayedSurfaceHeight <= 0) {
+                displayedSurfaceWidth = targetWidth
+                displayedSurfaceHeight = targetHeight
+            }
             configureSurfaceTextureSize(surfaceTexture, targetWidth, targetHeight)
             updateTextureTransform()
         }
@@ -270,9 +289,11 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
 
     override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
         val generation = activeEglSurfaceGeneration.get()
-        if (generation > 0) {
+        if (generation > 0 && lastRenderedGeneration.get() >= generation) {
             lastTextureUpdateGeneration.set(generation)
+            applyPendingDisplayedSurfaceSize()
         }
+        updateTextureTransform()
         notifyTextureUpdated()
     }
 
@@ -351,8 +372,12 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
             return
         }
 
-        val sourceWidth = requestedSurfaceWidth.takeIf { it > 0 } ?: eglSurfaceWidth
-        val sourceHeight = requestedSurfaceHeight.takeIf { it > 0 } ?: eglSurfaceHeight
+        val sourceWidth = displayedSurfaceWidth.takeIf { it > 0 }
+            ?: requestedSurfaceWidth.takeIf { it > 0 }
+            ?: eglSurfaceWidth
+        val sourceHeight = displayedSurfaceHeight.takeIf { it > 0 }
+            ?: requestedSurfaceHeight.takeIf { it > 0 }
+            ?: eglSurfaceHeight
         if (sourceWidth <= 0 || sourceHeight <= 0) {
             clearResizeTransform()
             return
@@ -393,6 +418,26 @@ class VideoTextureViewRenderer @JvmOverloads constructor(
         textureTransform.reset()
         resizeTransformPending = false
         setTransform(textureTransform)
+    }
+
+    private fun applyPendingDisplayedSurfaceSize() {
+        if (pendingDisplayedSurfaceWidth > 0 && pendingDisplayedSurfaceHeight > 0) {
+            displayedSurfaceWidth = pendingDisplayedSurfaceWidth
+            displayedSurfaceHeight = pendingDisplayedSurfaceHeight
+            pendingDisplayedSurfaceWidth = 0
+            pendingDisplayedSurfaceHeight = 0
+            return
+        }
+
+        if (
+            displayedSurfaceWidth <= 0 &&
+            displayedSurfaceHeight <= 0 &&
+            requestedSurfaceWidth > 0 &&
+            requestedSurfaceHeight > 0
+        ) {
+            displayedSurfaceWidth = requestedSurfaceWidth
+            displayedSurfaceHeight = requestedSurfaceHeight
+        }
     }
 
     private fun updateFrameData(videoFrame: VideoFrame) {

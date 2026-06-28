@@ -598,7 +598,6 @@ public class WebRTCView extends ViewGroup {
         layoutTextureRendererChildCentered(targetWidth, targetHeight, currentWidth, currentHeight);
         markTextureStartupLayoutReady();
 
-        resetTextureStartupFade(false);
         if (!hasTextureRendererDrawnFrame()) {
             cancelTextureResizeSwap();
             resetTextureResizeSnapshot();
@@ -610,6 +609,7 @@ public class WebRTCView extends ViewGroup {
             return;
         }
 
+        resetTextureStartupFade(false);
         if (startTextureResizeSwap(targetLeft, targetTop, targetRight, targetBottom, targetWidth, targetHeight, targetAspectRatio)) {
             resetTextureResizeFade();
             return;

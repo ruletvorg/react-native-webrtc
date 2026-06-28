@@ -213,6 +213,7 @@ public class WebRTCView extends ViewGroup {
     private boolean textureResizeSwapCovered;
     private int textureResizeSwapFramesUntilReady;
     private boolean textureResizeSwapHidPrevious;
+    private boolean textureCurrentRendererHasFirstFrame;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code WebRTCView}.
@@ -408,6 +409,9 @@ public class WebRTCView extends ViewGroup {
         post(() -> {
             Log.d(TAG, "First frame rendered.");
             setSurfaceRendererBackgroundColor(Color.TRANSPARENT);
+            if (textureViewRenderer != null) {
+                textureCurrentRendererHasFirstFrame = true;
+            }
             if (noanimation || textureViewRenderer == null || !isTextureStartupOverlayOwned()) {
                 textureFirstFrameWaitingForStartup = false;
                 if (noanimation) {
@@ -429,6 +433,10 @@ public class WebRTCView extends ViewGroup {
 
     private boolean hasTextureRendererDrawnFrame() {
         return textureViewRenderer != null && textureViewRenderer.hasDrawnFrame();
+    }
+
+    private boolean canAnimateTextureRenderer() {
+        return !noanimation && textureCurrentRendererHasFirstFrame && hasTextureRendererDrawnFrame();
     }
 
     private void emitFirstFrameRenderedIfNeeded() {
@@ -598,7 +606,7 @@ public class WebRTCView extends ViewGroup {
         layoutTextureRendererChildCentered(targetWidth, targetHeight, currentWidth, currentHeight);
         markTextureStartupLayoutReady();
 
-        if (!hasTextureRendererDrawnFrame()) {
+        if (!canAnimateTextureRenderer()) {
             cancelTextureResizeSwap();
             resetTextureResizeSnapshot();
             resetTextureResizeFade();
@@ -656,6 +664,10 @@ public class WebRTCView extends ViewGroup {
     }
 
     private void onTextureUpdated() {
+        if (hasTextureRendererDrawnFrame()) {
+            textureCurrentRendererHasFirstFrame = true;
+        }
+
         if (textureResizeSnapshotPending) {
             if (!isTextureResizeTargetUpdated()) {
                 return;
@@ -744,7 +756,7 @@ public class WebRTCView extends ViewGroup {
             return false;
         }
 
-        if (!hasTextureRendererDrawnFrame()) {
+        if (!canAnimateTextureRenderer()) {
             return false;
         }
 
@@ -1283,11 +1295,11 @@ public class WebRTCView extends ViewGroup {
 
     private void armTextureResizeFade() {
         if (textureViewRenderer == null) return;
-        if (noanimation || !hasTextureRendererDrawnFrame()) {
+        if (!canAnimateTextureRenderer()) {
             resetTextureResizeFade();
             textureViewRenderer.animate().cancel();
             textureViewRenderer.animate().setListener(null);
-            textureViewRenderer.setAlpha(1f);
+            textureViewRenderer.setAlpha(textureCurrentRendererHasFirstFrame ? 1f : 0f);
             return;
         }
 
@@ -1482,7 +1494,7 @@ public class WebRTCView extends ViewGroup {
         if (textureViewRenderer != null) {
             textureViewRenderer.animate().cancel();
             textureViewRenderer.animate().setListener(null);
-            textureViewRenderer.setAlpha(1f);
+            textureViewRenderer.setAlpha(textureCurrentRendererHasFirstFrame || noanimation ? 1f : 0f);
         }
         if (removeOverlay && !preserveLastFrame) {
             removeLastFrameOverlay();
@@ -1653,6 +1665,7 @@ public class WebRTCView extends ViewGroup {
 
         if (oldVideoTrack != videoTrack) {
             resetFirstFrameRendered();
+            textureCurrentRendererHasFirstFrame = false;
 
             if (oldVideoTrack != null) {
                 if (videoTrack == null && !preserveLastFrame) {

@@ -416,6 +416,7 @@ public class WebRTCView extends ViewGroup {
                 emitFirstFrameRenderedIfNeeded();
             } else {
                 textureFirstFrameWaitingForStartup = true;
+                scheduleTextureStartupFadeHardTimeout();
             }
         });
     }
@@ -1343,7 +1344,7 @@ public class WebRTCView extends ViewGroup {
 
     private void armTextureStartupFade() {
         if (textureViewRenderer == null) return;
-        if (noanimation || !hasTextureRendererDrawnFrame()) {
+        if (noanimation) {
             resetTextureStartupFade(true);
             return;
         }
@@ -1360,7 +1361,6 @@ public class WebRTCView extends ViewGroup {
         textureViewRenderer.animate().cancel();
         textureViewRenderer.animate().setListener(null);
         textureViewRenderer.setAlpha(0f);
-        scheduleTextureStartupFadeHardTimeout();
         markTextureStartupLayoutReady();
     }
 
@@ -1491,6 +1491,9 @@ public class WebRTCView extends ViewGroup {
 
     private VideoTextureViewRenderer createTextureRenderer() {
         VideoTextureViewRenderer renderer = new VideoTextureViewRenderer(getContext());
+        if (!noanimation) {
+            renderer.setAlpha(0f);
+        }
         renderer.setMirror(mirror);
         if (scalingType != null) {
             renderer.setScalingType(scalingType);
